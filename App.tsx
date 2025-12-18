@@ -75,6 +75,7 @@ const normalizePeriod = (str: string): string => {
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
+  const [hasApiKey, setHasApiKey] = useState<boolean>(true); // Assume true initially to prevent flash
   
   const checkGlobalKey = useCallback(() => {
     try {
@@ -85,8 +86,6 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const [hasApiKey, setHasApiKey] = useState<boolean>(false);
-  
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.RECORDS);
@@ -134,9 +133,10 @@ const App: React.FC = () => {
   const handleSelectKey = async () => {
     if (window.aistudio) {
       await window.aistudio.openSelectKey();
+      // Assume selection works
       setHasApiKey(true);
     } else {
-      alert("API_KEY not found. Please set it in Cloudflare Dashboard -> shrink-shrink -> Settings -> Variables.");
+      alert("API_KEY not found in environment. Please set it in your hosting platform variables.");
     }
   };
 
@@ -149,7 +149,7 @@ const App: React.FC = () => {
         setHasApiKey(checkGlobalKey());
       }
     };
-    const interval = setInterval(checkKey, 2000);
+    const interval = setInterval(checkKey, 3000);
     checkKey();
     return () => clearInterval(interval);
   }, [checkGlobalKey]);
@@ -252,8 +252,9 @@ const App: React.FC = () => {
     
     try {
       await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
-        if (text.startsWith("AUTH_REQUIRED")) {
+        if (text === "AUTH_REQUIRED") {
           setQuickAiText("");
+          setHasApiKey(false);
           handleSelectKey();
         } else {
           setQuickAiText(text);
@@ -434,7 +435,9 @@ const App: React.FC = () => {
           </h1>
           <div className="mt-8 space-y-2">
             {!hasApiKey ? (
-              <button onClick={handleSelectKey} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">Connect AI Hub</button>
+              <button onClick={handleSelectKey} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">
+                <Icons.Alert /> Engine Offline - Connect
+              </button>
             ) : (
               <div className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Diagnostic Engine Active
@@ -591,6 +594,14 @@ const App: React.FC = () => {
 
                 <div className="flex-1 flex overflow-hidden">
                   <div className="w-96 bg-slate-50 border-r border-slate-200 p-12 space-y-10 flex flex-col overflow-y-auto custom-scrollbar">
+                    {!hasApiKey && (
+                      <div className="p-8 bg-red-50 rounded-[2rem] border border-red-100 flex flex-col gap-4 animate-in slide-in-from-left-4">
+                        <p className="text-[10px] font-black text-red-500 uppercase tracking-widest">Action Required</p>
+                        <p className="text-xs font-medium text-red-700 leading-relaxed">Diagnostic Engine is disconnected. Re-link your secure API hub to continue.</p>
+                        <button onClick={handleSelectKey} className="w-full bg-red-500 text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-red-200 hover:bg-red-600 transition-all">Connect Engine</button>
+                      </div>
+                    )}
+                    
                     <div>
                       <h4 className="text-[10px] font-black text-slate-400 uppercase mb-8 tracking-[0.15em] border-b border-slate-200 pb-2">Diagnostic Scan</h4>
                       <button onClick={startDeepDive} className={`w-full p-10 rounded-[3rem] flex flex-col items-center gap-5 transition-all relative border-2 ${deepDiveStatus === 'analyzing' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 cursor-wait' : deepDiveStatus === 'ready' ? 'bg-emerald-500 border-emerald-400 text-white shadow-2xl scale-[1.02]' : 'bg-white border-slate-200 hover:border-indigo-400 hover:shadow-xl'}`}>

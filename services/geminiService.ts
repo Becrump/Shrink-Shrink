@@ -5,7 +5,7 @@ import { ShrinkRecord } from "../types";
 const getAI = () => {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
-    throw new Error("API_KEY_MISSING");
+    throw new Error("AUTH_REQUIRED");
   }
   return new GoogleGenAI({ apiKey });
 };
@@ -92,12 +92,11 @@ export const queryMarketAIQuick = async (
       }
     }
   } catch (error: any) {
-    if (error.message === "API_KEY_MISSING") {
-      onChunk("AUTH_REQUIRED: API Key missing.");
-    } else if (error.message?.includes("leaked") || error.message?.includes("403")) {
-      onChunk("AUTH_REQUIRED: The current API key is invalid or leaked. Please re-connect.");
+    const msg = error.message || "";
+    if (msg.includes("AUTH_REQUIRED") || msg.includes("403") || msg.includes("401") || msg.includes("API key")) {
+      onChunk("AUTH_REQUIRED");
     } else {
-      onChunk("Diagnosis failed. Error: " + error.message);
+      onChunk("Diagnosis failed. Error: " + msg);
     }
   }
 };
@@ -138,10 +137,11 @@ export const queryMarketAIDeep = async (
     });
     return response.text || "Diagnostic report generation failed.";
   } catch (error: any) {
-    if (error.message === "API_KEY_MISSING" || error.message?.includes("leaked") || error.message?.includes("403")) {
+    const msg = error.message || "";
+    if (msg.includes("AUTH_REQUIRED") || msg.includes("403") || msg.includes("401") || msg.includes("API key")) {
       return "AUTH_REQUIRED";
     }
-    return "Forensic connection failed: " + error.message;
+    return "Forensic connection failed: " + msg;
   }
 };
 
