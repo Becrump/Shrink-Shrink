@@ -314,7 +314,7 @@ const App: React.FC = () => {
           </h1>
           <div className="mt-4 flex items-center gap-2 px-2 py-1 bg-white/5 rounded-lg">
              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Vault: {records.length} Records</span>
+             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Secure Vault: {records.length} Records</span>
           </div>
         </div>
         <nav className="flex-1 px-4 space-y-1">
