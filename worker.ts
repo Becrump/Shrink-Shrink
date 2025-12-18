@@ -1,4 +1,3 @@
-
 export interface Env {
   ASSETS: { fetch: typeof fetch };
   API_KEY?: string;
@@ -7,53 +6,51 @@ export interface Env {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const path = url.pathname.replace(/\/+$/, ''); // Remove trailing slashes for consistent matching
 
-    // 1. Diagnostic Endpoints
-    if (url.pathname === '/api/debug-env') {
+    // 1. Config Endpoint - Using endsWith to be resilient to base path variations
+    if (path.endsWith('/api/config')) {
+      const payload = JSON.stringify({ API_KEY: env.API_KEY || "" });
+      return new Response(payload, { 
+        status: 200,
+        headers: { 
+          'Content-Type': 'application/json;charset=UTF-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          'Content-Length': payload.length.toString(),
+          'X-Content-Type-Options': 'nosniff'
+        } 
+      });
+    }
+
+    // 2. Diagnostic Endpoint
+    if (path.endsWith('/api/debug-env')) {
       const key = env.API_KEY || "";
-      return new Response(JSON.stringify({
+      const payload = JSON.stringify({
         status: "Worker Active",
         env_keys: Object.keys(env).filter(k => k !== 'ASSETS'),
         key_detected: !!key,
         key_length: key.length,
-        key_preview: key ? `${key.substring(0, 4)}...${key.substring(key.length - 4)}` : "none"
-      }), { headers: { 'Content-Type': 'application/json' } });
+        key_preview: key ? `${key.substring(0, 4)}...${key.substring(key.length - 4)}` : "none",
+        request_path: url.pathname
+      });
+      return new Response(payload, { 
+        status: 200,
+        headers: { 
+          'Content-Type': 'application/json;charset=UTF-8',
+          'Content-Length': payload.length.toString()
+        } 
+      });
     }
 
-    // 2. Fetch the actual asset
-    const response = await env.ASSETS.fetch(request);
-    
-    // 3. Determine if we should inject (HTML files or SPA routes)
-    const contentType = response.headers.get('content-type') || '';
-    const isHtml = contentType.includes('text/html') || 
-                   url.pathname.endsWith('/') || 
-                   url.pathname.endsWith('.html') ||
-                   (!url.pathname.includes('.') && !url.pathname.startsWith('/api/'));
-
-    if (isHtml && response.ok) {
-      try {
-        let html = await response.text();
-        const token = /%%API_KEY_INJECTION%%/g;
-        const actualKey = env.API_KEY || "MISSING_IN_WORKER";
-        
-        // Replace all instances of the token with the actual key
-        const updatedHtml = html.replace(token, actualKey);
-        
-        // Return the modified HTML with strict no-cache headers
-        return new Response(updatedHtml, {
-          headers: {
-            ...Object.fromEntries(response.headers),
-            'Content-Type': 'text/html;charset=UTF-8',
-            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0',
-          },
-        });
-      } catch (err) {
-        console.error("Injection failed:", err);
-      }
+    // 3. Asset Pass-through
+    // If it's an API call that wasn't caught, don't return an asset, return a clean 404
+    if (path.includes('/api/')) {
+      return new Response(JSON.stringify({ error: "API Route Not Found", path: url.pathname }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
-    return response;
+    return await env.ASSETS.fetch(request);
   },
 };

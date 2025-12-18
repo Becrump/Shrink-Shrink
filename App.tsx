@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { ShrinkRecord, ViewType, DeepDiveStatus } from './types';
 import { Icons } from './constants';
@@ -39,10 +38,10 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 const STORAGE_KEYS = {
-  RECORDS: 'shrink_records_v5',
-  MONTHS: 'shrink_months_v5',
-  MARKET: 'shrink_market_v5',
-  SEGMENT: 'shrink_segment_v5'
+  RECORDS: 'shrink_records_v6',
+  MONTHS: 'shrink_months_v6',
+  MARKET: 'shrink_market_v6',
+  SEGMENT: 'shrink_segment_v6'
 };
 
 const humanizeMarketName = (name: string): string => {
@@ -71,14 +70,44 @@ const normalizePeriod = (str: string): string => {
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
   const [isKeyActive, setIsKeyActive] = useState<boolean>(false);
+  const [isInitializing, setIsInitializing] = useState(true);
   const [showSystemDetails, setShowSystemDetails] = useState(false);
   const [systemInfo, setSystemInfo] = useState<{browserKey: string, workerData: any} | null>(null);
   
-  const checkKey = useCallback(() => {
-    const key = window.process?.env?.API_KEY;
-    const isValid = !!(key && key.length > 10 && key !== '%%API_KEY_INJECTION%%' && key !== 'undefined' && key !== 'MISSING_IN_WORKER');
-    setIsKeyActive(isValid);
-    return isValid;
+  // 1. BOOTLOADER: Fetch key from Worker on mount
+  useEffect(() => {
+    const initConfig = async () => {
+      try {
+        const res = await fetch('/api/config');
+        
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+
+        const rawText = await res.text();
+        const trimmed = rawText.trim();
+
+        // Safety check: Don't attempt to parse if it's clearly not JSON
+        if (!trimmed.startsWith('{')) {
+          throw new Error("Received non-JSON response from /api/config. The worker might not be intercepting this route correctly.");
+        }
+
+        try {
+          const data = JSON.parse(trimmed);
+          if (data.API_KEY) {
+            window.process.env.API_KEY = data.API_KEY;
+            setIsKeyActive(true);
+          }
+        } catch (parseErr) {
+          console.error("JSON parse failed. Content preview:", trimmed.substring(0, 50));
+        }
+      } catch (e: any) {
+        console.error("Config fetch failed:", e.message);
+      } finally {
+        setIsInitializing(false);
+      }
+    };
+    initConfig();
   }, []);
 
   const openIntegrityCheck = async () => {
@@ -93,12 +122,6 @@ const App: React.FC = () => {
       setShowSystemDetails(true);
     }
   };
-
-  useEffect(() => {
-    const interval = setInterval(checkKey, 2000);
-    checkKey();
-    return () => clearInterval(interval);
-  }, [checkKey]);
 
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
@@ -117,6 +140,15 @@ const App: React.FC = () => {
 
   const [selectedMarketFilter, setSelectedMarketFilter] = useState(() => localStorage.getItem(STORAGE_KEYS.MARKET) || 'All');
   const [activeSegment, setActiveSegment] = useState<SegmentFilter>(() => (localStorage.getItem(STORAGE_KEYS.SEGMENT) as SegmentFilter) || 'ALL');
+
+  const filteredRecords = useMemo(() => {
+    return records.filter(r => {
+      const normPeriod = normalizePeriod(r.period);
+      if (selectedMonths.size > 0 && !selectedMonths.has(normPeriod)) return false;
+      if (selectedMarketFilter !== 'All' && r.marketName !== selectedMarketFilter) return false;
+      return true;
+    });
+  }, [records, selectedMonths, selectedMarketFilter]);
 
   const [quickAiText, setQuickAiText] = useState<string>('');
   const [aiUserPrompt, setAiUserPrompt] = useState<string>('');
@@ -173,13 +205,7 @@ const App: React.FC = () => {
   }, [records]);
 
   const stats = useMemo(() => {
-    const filtered = records.filter(r => {
-      const normPeriod = normalizePeriod(r.period);
-      if (selectedMonths.size > 0 && !selectedMonths.has(normPeriod)) return false;
-      if (selectedMarketFilter !== 'All' && r.marketName !== selectedMarketFilter) return false;
-      return true;
-    });
-
+    const filtered = filteredRecords;
     if (filtered.length === 0) return { totalShrink: 0, totalRevenue: 0, totalOverage: 0, netVariance: 0, accuracy: 100, count: 0 };
     
     let totalShrink = 0, totalRevenue = 0, totalOverage = 0;
@@ -196,7 +222,7 @@ const App: React.FC = () => {
       accuracy: Number(Math.max(0, accuracy).toFixed(2)),
       count: filtered.length
     };
-  }, [records, selectedMonths, selectedMarketFilter]);
+  }, [filteredRecords]);
 
   const handleRunQuickAI = async (customPrompt?: string) => {
     const question = customPrompt || aiUserPrompt;
@@ -210,7 +236,7 @@ const App: React.FC = () => {
       await queryMarketAIQuick(records, stats, question, (text) => {
         if (text === "AUTH_REQUIRED") {
           setIsKeyActive(false);
-          setQuickAiText("DIAGNOSTIC ENGINE OFFLINE. Injected key mismatch.");
+          setQuickAiText("DIAGNOSTIC ENGINE OFFLINE. Check System Integrity.");
         } else {
           setQuickAiText(text);
         }
@@ -228,9 +254,9 @@ const App: React.FC = () => {
       setView('ai-insights');
       return;
     }
-    if (deepDiveStatus === 'analyzing' || records.length === 0) return;
+    if (deepDiveStatus === 'analyzing' || filteredRecords.length === 0) return;
     setDeepDiveStatus('analyzing');
-    queryMarketAIDeep(records, stats).then(result => {
+    queryMarketAIDeep(filteredRecords, stats).then(result => {
       if (result === "AUTH_REQUIRED") {
         setIsKeyActive(false);
         setDeepDiveStatus('idle');
@@ -303,6 +329,13 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans text-slate-900">
+      {isInitializing && (
+        <div className="fixed inset-0 z-[500] bg-slate-900 flex flex-col items-center justify-center text-white p-12">
+           <div className="w-16 h-16 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mb-8" />
+           <p className="font-black uppercase tracking-widest text-[10px] text-slate-400">Syncing Forensic Hub...</p>
+        </div>
+      )}
+
       {isProcessing && (
         <div className="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-xl flex items-center justify-center animate-in fade-in duration-300">
            <div className="bg-white p-12 rounded-[4rem] shadow-2xl flex flex-col items-center gap-8 border border-slate-200">
@@ -316,27 +349,25 @@ const App: React.FC = () => {
         <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-md flex items-center justify-center p-8 animate-in fade-in duration-300">
            <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-[3rem] p-12 text-slate-300 shadow-2xl overflow-hidden flex flex-col">
               <div className="flex justify-between items-center mb-8">
-                 <h2 className="text-2xl font-black text-white tracking-tighter uppercase">System Integrity Hub</h2>
+                 <h2 className="text-2xl font-black text-white tracking-tighter uppercase">Integrity Report</h2>
                  <button onClick={() => setShowSystemDetails(false)} className="text-slate-500 hover:text-white text-2xl">✕</button>
               </div>
               <div className="space-y-8 flex-1 overflow-y-auto custom-scrollbar pr-4">
                  <div className="bg-black/40 p-8 rounded-3xl border border-slate-800">
-                    <h3 className="text-indigo-400 font-black text-[10px] uppercase tracking-widest mb-4">Client Environment (Browser)</h3>
+                    <h3 className="text-indigo-400 font-black text-[10px] uppercase tracking-widest mb-4">Memory State</h3>
                     <div className="font-mono text-xs break-all space-y-2">
-                       <p><span className="text-slate-500">process.env.API_KEY:</span> <span className={systemInfo.browserKey.length > 20 ? 'text-emerald-400' : 'text-red-400'}>{systemInfo.browserKey.length > 10 ? `${systemInfo.browserKey.substring(0, 6)}...${systemInfo.browserKey.substring(systemInfo.browserKey.length - 4)}` : systemInfo.browserKey}</span></p>
-                       <p><span className="text-slate-500">Length:</span> {systemInfo.browserKey.length}</p>
+                       <p><span className="text-slate-500">process.env.API_KEY:</span> <span className={systemInfo.browserKey.length > 20 ? 'text-emerald-400' : 'text-red-400'}>{systemInfo.browserKey.length > 10 ? `${systemInfo.browserKey.substring(0, 6)}...${systemInfo.browserKey.substring(systemInfo.browserKey.length - 4)}` : "NOT_IN_MEMORY"}</span></p>
                     </div>
                  </div>
                  <div className="bg-black/40 p-8 rounded-3xl border border-slate-800">
-                    <h3 className="text-indigo-400 font-black text-[10px] uppercase tracking-widest mb-4">Worker Environment (Cloudflare)</h3>
+                    <h3 className="text-indigo-400 font-black text-[10px] uppercase tracking-widest mb-4">Worker State</h3>
                     <div className="font-mono text-xs break-all">
                        <pre>{JSON.stringify(systemInfo.workerData, null, 2)}</pre>
                     </div>
                  </div>
               </div>
-              <div className="mt-8 pt-8 border-t border-slate-800 flex justify-between items-center">
-                 <p className="text-[10px] text-slate-500 font-bold max-w-xs uppercase leading-relaxed">If the Browser Key shows '%%API_KEY_INJECTION%%', the Worker injection is being bypassed by a cache.</p>
-                 <button onClick={() => window.location.reload()} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl hover:bg-indigo-700 transition-all">Force Refresh</button>
+              <div className="mt-8 pt-8 border-t border-slate-800 flex justify-end">
+                 <button onClick={() => window.location.reload()} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl hover:bg-indigo-700 transition-all">Re-Sync Engine</button>
               </div>
            </div>
         </div>
@@ -352,11 +383,11 @@ const App: React.FC = () => {
             {!isKeyActive ? (
               <button onClick={openIntegrityCheck} className="w-full px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest text-left">
                 <div className="flex items-center gap-2 mb-1"><Icons.Alert /> ENGINE OFFLINE</div>
-                <div className="text-[7px] leading-tight opacity-70">Check Integrity Details</div>
+                <div className="text-[7px] leading-tight opacity-70">Diagnostic Report</div>
               </button>
             ) : (
               <button onClick={openIntegrityCheck} className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Diagnostic Engine Active
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Engine Active
               </button>
             )}
             <button onClick={purgeLedger} className="w-full flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-red-900/40 border border-slate-700 rounded-xl text-slate-400 hover:text-red-200 text-[9px] font-black uppercase tracking-widest transition-all">Flush Ledger</button>
@@ -373,8 +404,8 @@ const App: React.FC = () => {
         {importStaging && (
           <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/90 backdrop-blur-xl">
             <div className="bg-white w-full max-w-xl rounded-[4rem] shadow-2xl p-12 border border-slate-200">
-               <h3 className="text-3xl font-black mb-6 tracking-tighter">Audit Required</h3>
-               <p className="text-slate-500 mb-10 text-sm font-medium leading-relaxed">Found <span className="font-black text-indigo-600">{importStaging.records.length} forensic variances</span> across {importStaging.marketNames.length} markets.</p>
+               <h3 className="text-3xl font-black mb-6 tracking-tighter uppercase">Audit Required</h3>
+               <p className="text-slate-500 mb-10 text-sm font-medium leading-relaxed uppercase tracking-tight">Found <span className="font-black text-indigo-600">{importStaging.records.length} forensic variances</span> across {importStaging.marketNames.length} markets.</p>
                <div className="flex gap-4">
                   <button onClick={() => setImportStaging(null)} className="flex-1 py-5 font-black text-slate-400 uppercase tracking-widest text-[10px]">Discard</button>
                   <button onClick={() => {
@@ -427,12 +458,7 @@ const App: React.FC = () => {
                     <p className="text-5xl font-black text-slate-900 tracking-tighter">{stats.accuracy}%</p>
                  </div>
               </div>
-              <AnalysisCharts data={records.filter(r => {
-                const normPeriod = normalizePeriod(r.period);
-                if (selectedMonths.size > 0 && !selectedMonths.has(normPeriod)) return false;
-                if (selectedMarketFilter !== 'All' && r.marketName !== selectedMarketFilter) return false;
-                return true;
-              })} />
+              <AnalysisCharts data={filteredRecords} />
             </div>
           )}
 
@@ -465,7 +491,7 @@ const App: React.FC = () => {
                          <div className="prose prose-indigo max-w-none font-medium text-slate-700 whitespace-pre-wrap leading-relaxed animate-in fade-in slide-in-from-bottom-6">
                            {quickAiText}
                          </div>
-                       ) : <div className="h-full flex flex-col items-center justify-center text-slate-300 opacity-40 uppercase font-black text-center px-12 leading-relaxed">Select a forensic logic scope or start a full audit.</div>}
+                       ) : <div className="h-full flex flex-col items-center justify-center text-slate-300 opacity-40 uppercase font-black text-center px-12 leading-relaxed">Scope the Forensic Logic.</div>}
                     </div>
                     <div className="p-16 bg-slate-50/50 border-t border-slate-200">
                       <div className="relative group max-w-4xl mx-auto">

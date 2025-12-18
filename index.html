@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>The Shrink Shrink | AI Inventory Analyst</title>
     
-    <!-- API KEY INJECTION POINT -->
-    <script id="api-config">
-        window.process = { env: { API_KEY: "%%API_KEY_INJECTION%%" } };
+    <script>
+        // Initialize process.env structure
+        window.process = { env: { API_KEY: "" } };
         globalThis.process = window.process;
     </script>
 
