@@ -2,14 +2,13 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ShrinkRecord } from "../types";
 
-// Fix: Strictly follow Gemini API guidelines to use process.env.API_KEY directly.
-// We assume it's available via the global process object injected by our worker or build system.
-const getAIClient = () => {
-  const apiKey = (window as any).process?.env?.API_KEY || (process as any).env?.API_KEY;
-  if (!apiKey) {
+const validateKey = () => {
+  // Use a safe check for the environment variable injected by the worker
+  const key = window.process?.env?.API_KEY;
+  if (!key || typeof key !== 'string' || key.trim() === "") {
     throw new Error("MISSING_API_KEY");
   }
-  return new GoogleGenAI({ apiKey });
+  return key;
 };
 
 const isColdFoodManual = (name: string, code: string) => {
@@ -60,8 +59,8 @@ export const queryMarketAIQuick = async (
   onChunk: (text: string) => void
 ) => {
   try {
-    // Fix: Create a new GoogleGenAI instance right before making an API call.
-    const ai = getAIClient();
+    const apiKey = validateKey();
+    const ai = new GoogleGenAI({ apiKey });
     const { marketNames, outliers } = getAggregates(records);
 
     const prompt = `
@@ -89,19 +88,16 @@ export const queryMarketAIQuick = async (
 
     let fullText = "";
     for await (const chunk of responseStream) {
-      // Fix: Use the .text property directly (not a method) as per Gemini guidelines.
       if (chunk.text) {
         fullText += chunk.text;
         onChunk(fullText);
       }
     }
   } catch (error: any) {
-    // Fix: Robust handling for API errors and missing keys to signal the UI.
-    const errMsg = error?.message || "";
-    if (errMsg === "MISSING_API_KEY" || errMsg.includes("entity was not found") || errMsg.includes("API Key must be set")) {
-      onChunk("RESELECT_KEY");
+    if (error.message === "MISSING_API_KEY") {
+      onChunk("Forensic Key Missing. Please click 'Connect AI Hub' in the sidebar.");
     } else {
-      onChunk("Diagnosis failed. Check forensic engine connection. Error: " + errMsg);
+      onChunk("Diagnosis failed. Check forensic engine connection. Error: " + error.message);
     }
   }
 };
@@ -111,8 +107,8 @@ export const queryMarketAIDeep = async (
   summaryStats: any
 ): Promise<string> => {
   try {
-    // Fix: Create a new GoogleGenAI instance right before making an API call.
-    const ai = getAIClient();
+    const apiKey = validateKey();
+    const ai = new GoogleGenAI({ apiKey });
     const { outliers } = getAggregates(records);
 
     const prompt = `
@@ -137,24 +133,22 @@ export const queryMarketAIDeep = async (
       model: "gemini-3-pro-preview",
       contents: prompt,
       config: {
-        // Fix: Use a thinking budget for more detailed forensic reasoning (max for 3 Pro is 32768).
-        thinkingConfig: { thinkingBudget: 16000 }
+        thinkingConfig: { thinkingBudget: 4000 }
       }
     });
-    // Fix: Access .text as a property.
     return response.text || "Diagnostic report generation failed.";
   } catch (error: any) {
-    const errMsg = error?.message || "";
-    if (errMsg === "MISSING_API_KEY" || errMsg.includes("entity was not found") || errMsg.includes("API Key must be set")) {
+    if (error.message === "MISSING_API_KEY" || error?.message?.includes("entity was not found") || error?.message?.includes("API Key must be set")) {
       return "RESELECT_KEY";
     }
-    return "Forensic connection failed. Re-verify API credentials. " + errMsg;
+    return "Forensic connection failed. Re-verify API credentials. " + error.message;
   }
 };
 
 export const parseRawReportText = async (rawText: string): Promise<{ records: Partial<ShrinkRecord>[], detectedPeriod: string, detectedMarket: string }> => {
   try {
-    const ai = getAIClient();
+    const apiKey = validateKey();
+    const ai = new GoogleGenAI({ apiKey });
     const prompt = `Extract inventory data from this text. Focus on identifying the human-readable Market Name, the Reporting Period, and the itemized variances. Return valid JSON.\n\nTEXT:\n${rawText.slice(0, 15000)}`;
 
     const response = await ai.models.generateContent({
@@ -184,7 +178,6 @@ export const parseRawReportText = async (rawText: string): Promise<{ records: Pa
         }
       }
     });
-    // Fix: Access .text as a property.
     const parsed = JSON.parse(response.text || "{}");
     return { 
       records: parsed.items || [], 

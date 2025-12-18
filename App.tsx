@@ -75,49 +75,18 @@ const normalizePeriod = (str: string): string => {
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
-  const [workerStatus, setWorkerStatus] = useState<string>('checking');
-  const [diagLog, setDiagLog] = useState<string[]>([]);
-
-  const addLog = (msg: string) => setDiagLog(prev => [...prev.slice(-4), `[${new Date().toLocaleTimeString()}] ${msg}`]);
-
+  
   const checkGlobalKey = useCallback(() => {
     try {
-      const windowKey = (window as any).process?.env?.API_KEY;
-      if (windowKey && windowKey.trim().length > 0) return true;
-      const metaKey = document.querySelector('meta[name="ai-key-bound"]')?.getAttribute('content');
-      if (metaKey === 'true') return true;
-      const processKey = typeof process !== 'undefined' ? (process.env?.API_KEY || (process.env as any)?.VITE_API_KEY) : null;
-      if (processKey && processKey.trim().length > 0) return true;
-      return false;
+      const key = window.process?.env?.API_KEY;
+      return !!(key && key.trim().length > 0);
     } catch {
       return false;
     }
   }, []);
 
-  const [hasApiKey, setHasApiKey] = useState<boolean>(checkGlobalKey());
+  const [hasApiKey, setHasApiKey] = useState<boolean>(checkGlobalKey);
   
-  // Worker Health Check
-  useEffect(() => {
-    const checkWorker = async () => {
-      try {
-        const res = await fetch('/api/v1/health', { cache: 'no-store' });
-        if (res.ok) {
-          const data = await res.json();
-          setWorkerStatus('active');
-          addLog(`Worker Active. Key Bound: ${data.key_detected}`);
-          if (data.key_detected) setHasApiKey(true);
-        } else {
-          setWorkerStatus('failed');
-          addLog("Worker check failed: HTTP " + res.status);
-        }
-      } catch (e) {
-        setWorkerStatus('unreachable');
-        addLog("Worker unreachable (Cache Bypass working?)");
-      }
-    };
-    checkWorker();
-  }, []);
-
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.RECORDS);
@@ -164,26 +133,25 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const checkKey = async () => {
-      let isPresent = checkGlobalKey();
       if (window.aistudio) {
-        const studioPresent = await window.aistudio.hasSelectedApiKey();
-        isPresent = isPresent || studioPresent;
-      }
-      if (isPresent !== hasApiKey) {
-        setHasApiKey(isPresent);
-        addLog(`Key Status Transition: ${isPresent ? 'PRESENT' : 'MISSING'}`);
+        const selected = await window.aistudio.hasSelectedApiKey();
+        setHasApiKey(selected || checkGlobalKey());
+      } else {
+        setHasApiKey(checkGlobalKey());
       }
     };
-
+    // Periodic check in case injection happens late
     const interval = setInterval(checkKey, 2000);
     checkKey();
     return () => clearInterval(interval);
-  }, [checkGlobalKey, hasApiKey]);
+  }, [checkGlobalKey]);
 
   const handleSelectKey = async () => {
     if (window.aistudio) {
       await window.aistudio.openSelectKey();
       setHasApiKey(true);
+    } else {
+      alert("API_KEY not found. Please set it in Cloudflare Dashboard -> shrink-shrink -> Settings -> Variables.");
     }
   };
 
@@ -274,7 +242,7 @@ const App: React.FC = () => {
   }, [filteredRecords]);
 
   const handleRunQuickAI = async (customPrompt?: string) => {
-    if (!hasApiKey) return;
+    if (!hasApiKey) return handleSelectKey();
     const question = customPrompt || aiUserPrompt;
     if (!question.trim() || filteredRecords.length === 0 || isQuickAnalyzing) return;
     
@@ -285,14 +253,7 @@ const App: React.FC = () => {
     setView('ai-insights');
     
     try {
-      await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
-        if (text === "RESELECT_KEY") {
-          setHasApiKey(false);
-          addLog("Key Rejected by API. Resetting...");
-        } else {
-          setQuickAiText(text);
-        }
-      });
+      await queryMarketAIQuick(filteredRecords, stats, question, (text) => setQuickAiText(text));
     } finally {
       setIsQuickAnalyzing(false);
       setActiveChip(null);
@@ -300,7 +261,7 @@ const App: React.FC = () => {
   };
 
   const startDeepDive = async () => {
-    if (!hasApiKey) return;
+    if (!hasApiKey) return handleSelectKey();
     if (deepDiveStatus === 'ready') {
       setQuickAiText(deepDiveResult);
       setDeepDiveStatus('idle');
@@ -313,6 +274,7 @@ const App: React.FC = () => {
       if (result === "RESELECT_KEY") {
         setHasApiKey(false);
         setDeepDiveStatus('idle');
+        handleSelectKey();
         return;
       }
       setDeepDiveResult(result);
@@ -444,46 +406,6 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans text-slate-900">
-      {/* Diagnostic Alert Overlay */}
-      {!hasApiKey && (
-        <div className="fixed inset-0 z-[1000] bg-slate-900/90 backdrop-blur-3xl flex items-center justify-center p-6 animate-in fade-in duration-500">
-          <div className="bg-white max-w-2xl w-full rounded-[4rem] shadow-2xl p-16 border border-slate-200">
-            <div className="w-20 h-20 bg-red-50 text-red-500 rounded-3xl flex items-center justify-center mb-10"><Icons.Alert /></div>
-            <h2 className="text-4xl font-black text-slate-900 tracking-tighter mb-6">Forensic Engine: Offline</h2>
-            <p className="text-slate-600 font-medium leading-relaxed mb-8 text-lg">
-              The AI Engine is currently disconnected. This is usually due to <strong>Cloudflare Edge Caching</strong> or a missing environment variable.
-            </p>
-            
-            <div className="space-y-6 mb-12">
-               <div className="bg-slate-50 p-8 rounded-3xl border border-slate-100">
-                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Forensic Diagnostics:</h4>
-                  <div className="space-y-2 font-mono text-[10px] text-slate-500 bg-slate-100 p-4 rounded-xl mb-6">
-                    {diagLog.map((log, i) => <div key={i}>{log}</div>)}
-                    <div>Worker Status: <span className={workerStatus === 'active' ? 'text-emerald-600 font-bold' : 'text-red-500 font-bold'}>{workerStatus.toUpperCase()}</span></div>
-                  </div>
-                  <ul className="space-y-4">
-                    <li className="flex gap-4 text-sm font-bold text-slate-700">
-                       <span className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[10px] shrink-0">1</span>
-                       Check Cloudflare Dashboard: <strong>Caching -> Purge Cache -> Purge Everything</strong>.
-                    </li>
-                    <li className="flex gap-4 text-sm font-bold text-slate-700">
-                       <span className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[10px] shrink-0">2</span>
-                       Ensure 'API_KEY' is a <strong>Text</strong> variable in Cloudflare Pages settings.
-                    </li>
-                  </ul>
-               </div>
-            </div>
-
-            <div className="flex gap-4">
-               {window.aistudio && (
-                 <button onClick={handleSelectKey} className="flex-1 bg-indigo-600 text-white py-6 rounded-3xl font-black shadow-2xl hover:bg-indigo-700 transition-all uppercase tracking-widest text-xs">Manual Key Connect</button>
-               )}
-               <button onClick={() => window.location.reload()} className="flex-1 border-4 border-slate-100 text-slate-400 py-6 rounded-3xl font-black hover:bg-slate-50 transition-all uppercase tracking-widest text-xs">Refresh & Retry</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {isProcessing && (
         <div className="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-xl flex items-center justify-center animate-in fade-in duration-300">
            <div className="bg-white p-12 rounded-[4rem] shadow-2xl flex flex-col items-center gap-8 border border-slate-200 max-w-sm w-full text-center">
@@ -508,7 +430,7 @@ const App: React.FC = () => {
           </h1>
           <div className="mt-8 space-y-2">
             {!hasApiKey ? (
-              <button onClick={() => window.location.reload()} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">Syncing Engine...</button>
+              <button onClick={handleSelectKey} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">Connect AI Hub</button>
             ) : (
               <div className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Diagnostic Engine Active

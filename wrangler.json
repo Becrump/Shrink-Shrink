@@ -7,9 +7,6 @@
     "directory": "./dist",
     "binding": "ASSETS"
   },
-  "vars": {
-    "API_KEY": ""
-  },
   "observability": {
     "enabled": true
   }
