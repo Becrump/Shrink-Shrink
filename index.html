@@ -5,11 +5,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>The Shrink Shrink | AI Inventory Analyst</title>
-    <script>
-        // Use the environment-provided API key as per security guidelines.
-        // This avoids "leaked key" errors caused by hardcoding sensitive strings.
-        window.process = window.process || {};
-        window.process.env = window.process.env || {};
+    <script id="api-key-injection">
+        // This block is a placeholder. 
+        // The Cloudflare Worker will replace this entire script tag with the actual key.
+        window.process = { env: { API_KEY: "" } };
         globalThis.process = window.process;
     </script>
     <script src="https://cdn.tailwindcss.com"></script>

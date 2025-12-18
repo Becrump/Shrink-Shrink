@@ -44,10 +44,10 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 const STORAGE_KEYS = {
-  RECORDS: 'shrink_guard_records_v22',
-  MONTHS: 'shrink_guard_months_v22',
-  MARKET: 'shrink_guard_market_v22',
-  SEGMENT: 'shrink_guard_segment_v22'
+  RECORDS: 'shrink_guard_records_v24',
+  MONTHS: 'shrink_guard_months_v24',
+  MARKET: 'shrink_guard_market_v24',
+  SEGMENT: 'shrink_guard_segment_v24'
 };
 
 const humanizeMarketName = (name: string): string => {
@@ -75,12 +75,13 @@ const normalizePeriod = (str: string): string => {
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
-  const [hasApiKey, setHasApiKey] = useState<boolean>(true); // Assume true initially to prevent flash
+  const [hasApiKey, setHasApiKey] = useState<boolean>(true);
   
   const checkGlobalKey = useCallback(() => {
     try {
       const key = window.process?.env?.API_KEY;
-      return !!(key && key.trim().length > 0);
+      // Ensure the key isn't just an empty string or a placeholder
+      return !!(key && key.trim().length > 5 && key !== 'undefined' && key !== 'null');
     } catch {
       return false;
     }
@@ -133,10 +134,10 @@ const App: React.FC = () => {
   const handleSelectKey = async () => {
     if (window.aistudio) {
       await window.aistudio.openSelectKey();
-      // Assume selection works
       setHasApiKey(true);
     } else {
-      alert("API_KEY not found in environment. Please set it in your hosting platform variables.");
+      // Improved instructions for the user
+      alert("Diagnostic engine is currently offline.\n\nTo fix this:\n1. In your hosting dashboard (e.g., Cloudflare Workers), add a Secret named 'API_KEY' with your key value.\n2. Redeploy the application.\n\nThe app will then automatically find and use the key.");
     }
   };
 
@@ -297,7 +298,6 @@ const App: React.FC = () => {
         const workbook = XLSX.read(data, { type: 'array' });
         let allExtractedRecords: any[] = [];
         let humanMarketNames: string[] = [];
-        let detectedColumnNames: string[] = [];
         
         workbook.SheetNames.forEach((sheetName, sIdx) => {
           try {
@@ -332,9 +332,7 @@ const App: React.FC = () => {
                   else if (s === 'sold qty' || s === 'qty sold' || s === 'units sold') colMap.soldQty = idx;
                   else if (s === 'sale price' || s === 'price') colMap.salePrice = idx;
                   else if (s === 'item cost' || s === 'unit cost' || s === 'cost') colMap.itemCost = idx;
-                  else if (s.includes('variance') && !colMap.variance) colMap.variance = idx;
                 });
-                detectedColumnNames = row.map(c => String(c || ''));
                 break;
               }
             }
@@ -352,14 +350,7 @@ const App: React.FC = () => {
               if (Math.abs(invVar) < 0.001) return;
 
               const cost = parseFloat(row[colMap.itemCost]) || 0;
-              const soldQty = parseFloat(row[colMap.soldQty]) || 0;
-              const salePrice = parseFloat(row[colMap.salePrice]) || 0;
-              
-              let revenue = parseFloat(row[colMap.revenue]) || 0;
-              if (revenue === 0 && soldQty > 0 && salePrice > 0) {
-                revenue = soldQty * salePrice;
-              }
-              
+              const revenue = parseFloat(row[colMap.revenue]) || 0;
               const impact = invVar * cost;
               
               allExtractedRecords.push({
@@ -367,8 +358,6 @@ const App: React.FC = () => {
                 itemName: String(row[colMap.itemName] || ''),
                 invVariance: invVar,
                 totalRevenue: revenue,
-                soldQty: soldQty,
-                salePrice: salePrice,
                 shrinkLoss: invVar < 0 ? Math.abs(impact) : 0,
                 unitCost: cost,
                 marketName: cleanName,
@@ -384,7 +373,7 @@ const App: React.FC = () => {
           return;
         }
 
-        setImportStaging({ records: allExtractedRecords, marketNames: humanMarketNames, period: targetedMonth || 'Current', detectedColumns: detectedColumnNames });
+        setImportStaging({ records: allExtractedRecords, marketNames: humanMarketNames, period: targetedMonth || 'Current', detectedColumns: [] });
         setIsProcessing(false);
       } catch (err) { setIsProcessing(false); }
     };
@@ -421,7 +410,6 @@ const App: React.FC = () => {
               <div>
                  <h3 className="text-2xl font-black text-slate-900 uppercase tracking-tighter">Forensic Sync</h3>
                  <p className="text-slate-500 font-bold text-[10px] uppercase tracking-widest mt-2">{processingStatus}</p>
-                 <p className="text-slate-400 text-[9px] mt-4 max-w-[25ch] mx-auto uppercase leading-relaxed font-bold">Scanning: KF/F/B UPC Accuracy vs Manual Planogram counts...</p>
               </div>
            </div>
         </div>
@@ -451,12 +439,6 @@ const App: React.FC = () => {
           <button onClick={() => setView('dashboard')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${view === 'dashboard' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20' : 'hover:bg-slate-800/50 disabled:opacity-20'}`}><Icons.Dashboard /> Performance</button>
           <button onClick={() => setView('ai-insights')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${view === 'ai-insights' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20' : 'hover:bg-slate-800/50 disabled:opacity-20'}`}><Icons.AI /> AI Diagnosis</button>
         </nav>
-        <div className="p-8 border-t border-slate-800">
-           <div className="bg-slate-800/40 p-4 rounded-2xl border border-slate-700/50">
-              <p className="text-[9px] font-black text-slate-500 uppercase mb-1 tracking-widest">Active Variances</p>
-              <p className="text-base font-black text-white">{records.length.toLocaleString()}</p>
-           </div>
-        </div>
       </aside>
 
       <main className="flex-1 overflow-y-auto bg-[#F8FAFC] custom-scrollbar">
@@ -475,7 +457,7 @@ const App: React.FC = () => {
                     ))}
                   </div>
                </div>
-               <p className="text-slate-500 mb-10 text-sm font-medium leading-relaxed">Identifying <span className="font-black text-indigo-600">{importStaging.records.length} forensic variances</span>. Separating UPC-Scanned (KF/F/B) from Manual counting.</p>
+               <p className="text-slate-500 mb-10 text-sm font-medium leading-relaxed">Identifying <span className="font-black text-indigo-600">{importStaging.records.length} forensic variances</span>.</p>
                <div className="flex gap-4">
                   <button onClick={() => setImportStaging(null)} className="flex-1 py-5 font-black text-slate-400 uppercase tracking-widest text-[10px] hover:text-red-500 transition-colors">Discard</button>
                   <button onClick={commitImport} className="flex-[2] bg-indigo-600 text-white py-5 rounded-3xl font-black shadow-2xl shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all uppercase tracking-widest text-xs">Commit To History</button>
@@ -531,8 +513,7 @@ const App: React.FC = () => {
                          </button>
                        ))}
                     </div>
-                    <div className="h-10 w-px bg-slate-200 hidden md:block" />
-                    <select value={selectedMarketFilter} onChange={(e) => setSelectedMarketFilter(e.target.value)} className="bg-slate-50 border border-slate-100 rounded-2xl px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-600 outline-none focus:ring-4 focus:ring-indigo-500/10 min-w-[340px] shadow-sm appearance-none cursor-pointer">
+                    <select value={selectedMarketFilter} onChange={(e) => setSelectedMarketFilter(e.target.value)} className="bg-slate-50 border border-slate-100 rounded-2xl px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-600 min-w-[340px] shadow-sm appearance-none cursor-pointer">
                        <option value="All">All Filtered Locations</option>
                        {marketOptions.filter(m => m !== 'All').map(opt => <option key={opt} value={opt}>{opt}</option>)}
                     </select>
@@ -543,36 +524,20 @@ const App: React.FC = () => {
                  <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
                     <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Shrink (Cost)</p>
                     <p className="text-5xl font-black text-red-500 tracking-tighter">-${stats.totalShrink.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
-                    <div className="mt-5 flex items-center justify-between border-t border-slate-50 pt-3">
-                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Loss Impact</span>
-                       <span className="text-[12px] font-black text-slate-900">{stats.shrinkPct}%</span>
-                    </div>
                  </div>
                  <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
                     <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Overage (Cost)</p>
                     <p className="text-5xl font-black text-emerald-600 tracking-tighter">+${stats.totalOverage.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
-                    <div className="mt-5 flex items-center justify-between border-t border-slate-50 pt-3">
-                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Gain Impact</span>
-                       <span className="text-[12px] font-black text-slate-900">{stats.overagePct}%</span>
-                    </div>
                  </div>
                  <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
                     <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Net Outcome</p>
                     <p className={`text-5xl font-black tracking-tighter ${stats.netVariance >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                        {stats.netVariance >= 0 ? '+' : ''}${Math.round(stats.netVariance).toLocaleString()}
                     </p>
-                    <div className="mt-5 flex items-center justify-between border-t border-slate-50 pt-3">
-                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Bottom Line Shift</span>
-                       <span className="text-[12px] font-black text-slate-900">{stats.netPct}%</span>
-                    </div>
                  </div>
                  <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
                     <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Forensic Integrity</p>
                     <p className="text-5xl font-black text-slate-900 tracking-tighter">{stats.accuracy}%</p>
-                    <div className="mt-5 flex items-center justify-between border-t border-slate-50 pt-3">
-                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Audit Stability</span>
-                       <div className={`w-3 h-3 rounded-full ${stats.accuracy > 98 ? 'bg-emerald-500 shadow-lg shadow-emerald-200' : 'bg-orange-500 shadow-lg shadow-orange-200'}`} />
-                    </div>
                  </div>
               </div>
               <AnalysisCharts data={filteredRecords} />
@@ -597,7 +562,7 @@ const App: React.FC = () => {
                     {!hasApiKey && (
                       <div className="p-8 bg-red-50 rounded-[2rem] border border-red-100 flex flex-col gap-4 animate-in slide-in-from-left-4">
                         <p className="text-[10px] font-black text-red-500 uppercase tracking-widest">Action Required</p>
-                        <p className="text-xs font-medium text-red-700 leading-relaxed">Diagnostic Engine is disconnected. Re-link your secure API hub to continue.</p>
+                        <p className="text-xs font-medium text-red-700 leading-relaxed">Diagnostic Engine is disconnected. Re-link your secure API hub or check your hosting environment variables.</p>
                         <button onClick={handleSelectKey} className="w-full bg-red-500 text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-red-200 hover:bg-red-600 transition-all">Connect Engine</button>
                       </div>
                     )}
@@ -607,7 +572,6 @@ const App: React.FC = () => {
                       <button onClick={startDeepDive} className={`w-full p-10 rounded-[3rem] flex flex-col items-center gap-5 transition-all relative border-2 ${deepDiveStatus === 'analyzing' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 cursor-wait' : deepDiveStatus === 'ready' ? 'bg-emerald-500 border-emerald-400 text-white shadow-2xl scale-[1.02]' : 'bg-white border-slate-200 hover:border-indigo-400 hover:shadow-xl'}`}>
                         <div className={`text-5xl ${deepDiveStatus === 'analyzing' ? 'animate-pulse' : ''}`}>{deepDiveStatus === 'ready' ? '📊' : '🩺'}</div>
                         <div className="text-center"><span className="font-black uppercase tracking-tighter text-base">{deepDiveStatus === 'idle' ? 'Full Forensic Audit' : deepDiveStatus === 'analyzing' ? 'Auditing Ledger...' : 'Audit Generated'}</span></div>
-                        {deepDiveStatus === 'ready' && <div className="text-[10px] font-black uppercase tracking-widest mt-1 opacity-80">Click to View Diagnosis</div>}
                       </button>
                     </div>
 
@@ -621,15 +585,9 @@ const App: React.FC = () => {
                               key={idx} 
                               disabled={isQuickAnalyzing}
                               onClick={() => handleRunQuickAI(q)} 
-                              className={`text-left p-5 rounded-3xl border text-[11px] font-bold uppercase tracking-widest transition-all relative overflow-hidden group ${isActive ? 'bg-indigo-600 border-indigo-500 text-white shadow-xl translate-x-2' : 'bg-white border-slate-200 text-slate-500 hover:border-indigo-400 hover:text-indigo-600 hover:shadow-md'}`}
+                              className={`text-left p-5 rounded-3xl border text-[11px] font-bold uppercase tracking-widest transition-all relative group ${isActive ? 'bg-indigo-600 border-indigo-500 text-white shadow-xl translate-x-2' : 'bg-white border-slate-200 text-slate-500 hover:border-indigo-400 hover:text-indigo-600 hover:shadow-md'}`}
                             >
-                              <div className="relative z-10 flex items-center justify-between">
-                                <span className="max-w-[85%] leading-relaxed">{q}</span>
-                                {isActive && (
-                                  <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                                )}
-                              </div>
-                              {!isActive && <div className="absolute right-4 opacity-0 group-hover:opacity-100 transition-opacity">→</div>}
+                              <span className="relative z-10 leading-relaxed">{q}</span>
                             </button>
                           );
                         })}
@@ -648,14 +606,13 @@ const App: React.FC = () => {
                             <div className="w-20 h-20 bg-indigo-50 rounded-[2rem] flex items-center justify-center text-indigo-500 animate-bounce shadow-xl"><Icons.AI /></div>
                             <div className="text-center">
                                <h4 className="text-2xl font-black text-slate-900 tracking-tighter uppercase">Diagnosis Active</h4>
-                               <p className="text-sm font-bold uppercase tracking-widest mt-2 text-slate-400">Querying forensic ledger for "{activeChip || 'Custom Audit'}"...</p>
+                               <p className="text-sm font-bold uppercase tracking-widest mt-2 text-slate-400">Querying forensic ledger...</p>
                             </div>
                          </div>
                        ) : (
                          <div className="h-full flex flex-col items-center justify-center text-slate-300 opacity-40 text-center">
                            <div className="w-28 h-28 bg-slate-50 rounded-full flex items-center justify-center mb-10 border border-slate-100 shadow-sm"><Icons.AI /></div>
                            <h4 className="text-3xl font-black text-slate-900 tracking-tighter uppercase">Audit Awaiting Query</h4>
-                           <p className="max-w-xs text-base mt-4 font-semibold italic leading-relaxed">"System Accuracy: {stats.accuracy}%. Forensic engine calibrated for Scanned (KF/F/B) vs. Manual Planogram discrepancies."</p>
                          </div>
                        )}
                     </div>
@@ -667,7 +624,7 @@ const App: React.FC = () => {
                           onChange={(e) => setAiUserPrompt(e.target.value)} 
                           onKeyDown={(e) => e.key === 'Enter' && handleRunQuickAI()} 
                           disabled={isQuickAnalyzing}
-                          placeholder="Ask about missed KF/F/B delivery 'Adds' or snack/drink counting errors..." 
+                          placeholder="Ask about variances..." 
                           className="w-full bg-white border-4 border-slate-200 group-focus-within:border-indigo-500 rounded-[3rem] px-14 py-8 text-base font-bold outline-none transition-all pr-32 shadow-2xl shadow-slate-200/50 placeholder:text-slate-300 disabled:opacity-50" 
                         />
                         <button 
