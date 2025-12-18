@@ -20,10 +20,10 @@ const MONTHS = [
 ];
 
 const SUGGESTED_QUESTIONS = [
-  "Which market has the most suspicious inventory overages?",
-  "Analyze high-value items vs small-ticket shrink trends.",
-  "What is the projected shrink for next month?",
-  "Show me the top 5 cold food shrink anomalies across the portfolio."
+  "What are the most alarming symptoms in this market?",
+  "Diagnose the high-value items vs small-ticket shrink.",
+  "Prognosis: Where will shrink be in 3 months if untreated?",
+  "Isolate the cold food anomalies: Spoils or Theft?"
 ];
 
 const STORAGE_KEYS = {
@@ -310,17 +310,17 @@ const App: React.FC = () => {
         <div className="p-6">
           <h1 className="text-xl font-bold text-white flex items-center gap-2">
             <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center text-white font-black">S</div>
-            ShrinkGuard AI
+            The Shrink Shrink
           </h1>
           <div className="mt-4 flex items-center gap-2 px-2 py-1 bg-white/5 rounded-lg">
              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Secure Vault: {records.length} Records</span>
+             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Records: {records.length}</span>
           </div>
         </div>
         <nav className="flex-1 px-4 space-y-1">
           <button onClick={() => setView('report-upload')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${view === 'report-upload' ? 'bg-slate-800 text-white shadow-lg' : 'hover:bg-slate-800'}`}><Icons.Upload /> Import</button>
           <button onClick={() => setView('dashboard')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${view === 'dashboard' ? 'bg-slate-800 text-white shadow-lg' : 'hover:bg-slate-800 disabled:opacity-30'}`}><Icons.Dashboard /> Analytics</button>
-          <button onClick={() => setView('ai-insights')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${view === 'ai-insights' ? 'bg-slate-800 text-white shadow-lg' : 'hover:bg-slate-800 disabled:opacity-30'}`}><Icons.AI /> AI Chat</button>
+          <button onClick={() => setView('ai-insights')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${view === 'ai-insights' ? 'bg-slate-800 text-white shadow-lg' : 'hover:bg-slate-800 disabled:opacity-30'}`}><Icons.AI /> AI Doctor</button>
         </nav>
         <div className="p-4 border-t border-slate-800">
           <p className="text-[9px] font-black text-slate-500 uppercase text-center tracking-widest leading-relaxed">Forensic Audit Tooling<br/>Powered by Gemini Flash</p>
@@ -504,8 +504,8 @@ const App: React.FC = () => {
                       <div className="flex items-center gap-4">
                         <div className="w-10 h-10 bg-indigo-500 rounded-2xl flex items-center justify-center text-white"><Icons.AI /></div>
                         <div>
-                          <h3 className="text-xl font-black tracking-tight">Forensic AI Assistant</h3>
-                          <p className="text-slate-400 text-[9px] font-bold uppercase tracking-widest">Interactive Audit Intelligence</p>
+                          <h3 className="text-xl font-black tracking-tight">The Shrink Shrink</h3>
+                          <p className="text-slate-400 text-[9px] font-bold uppercase tracking-widest">Dr. of Inventory & Loss Prevention</p>
                         </div>
                       </div>
                       <button onClick={() => setView('dashboard')} className="px-5 py-2 hover:bg-white/10 rounded-xl font-bold text-[10px] uppercase transition-all border border-white/20">Return to Charts</button>
@@ -513,8 +513,21 @@ const App: React.FC = () => {
                     
                     <div className="flex-1 flex flex-col lg:flex-row">
                       {/* Side Suggestions */}
-                      <div className="lg:w-80 bg-slate-50 border-r border-slate-100 p-8 space-y-4">
-                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Quick Audits</h4>
+                      <div className="lg:w-80 bg-slate-50 border-r border-slate-100 p-8 space-y-4 flex flex-col">
+                        <button 
+                          onClick={() => handleRunAI("Doctor, I need a full examination of this market. Dig deep into the data. What are the vital signs? Are there symptoms of theft, driver error, or system issues? Extrapolate the current trends: if we don't treat this now, what does the patient look like in 3 months? Differentiate between 'good' variances (likely timing/receiving) and 'bad' variances (loss).")} 
+                          disabled={isAnalyzing}
+                          className="w-full bg-red-500 text-white p-5 rounded-2xl shadow-lg hover:bg-red-600 hover:shadow-red-200 hover:scale-[1.02] transition-all text-center group mb-4 relative overflow-hidden"
+                        >
+                          <div className="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
+                          <div className="relative">
+                            <span className="text-2xl mb-2 block">🩺</span>
+                            <span className="font-black uppercase tracking-widest text-sm block">Dig Deep!</span>
+                            <span className="text-[9px] font-bold opacity-80 block mt-1">Full Diagnostic Scan</span>
+                          </div>
+                        </button>
+
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Triage Questions</h4>
                         {SUGGESTED_QUESTIONS.map((q, i) => (
                           <button key={i} onClick={() => handleRunAI(q)} disabled={isAnalyzing} className="w-full text-left bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:border-indigo-400 hover:shadow-md transition-all text-xs font-bold text-slate-600 leading-relaxed group">
                             <div className="flex gap-3">
@@ -535,14 +548,14 @@ const App: React.FC = () => {
                           ) : (
                             <div className="flex flex-col items-center justify-center py-32 text-center opacity-50">
                               <div className="w-20 h-20 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mb-6"><Icons.AI /></div>
-                              <h4 className="text-lg font-black text-slate-900 mb-1">Cantaloupe Seed Intelligence Ready</h4>
-                              <p className="text-slate-400 text-sm max-w-sm">Ask me about your market shrinkage, identify operational leaks, or find receiving anomalies.</p>
+                              <h4 className="text-lg font-black text-slate-900 mb-1">The Doctor is In.</h4>
+                              <p className="text-slate-400 text-sm max-w-sm">Click "Dig Deep!" for a full examination, or ask me about specific symptoms.</p>
                             </div>
                           )}
                           {isAnalyzing && (
                             <div className="mt-8 flex gap-4 items-center bg-indigo-50/50 p-6 rounded-3xl border border-indigo-100 animate-pulse">
                                <div className="animate-spin h-5 w-5 border-2 border-indigo-600 border-t-transparent rounded-full" />
-                               <span className="text-xs font-black text-indigo-600 uppercase tracking-widest">Performing Forensic Calculation...</span>
+                               <span className="text-xs font-black text-indigo-600 uppercase tracking-widest">The Shrink Shrink is diagnosing...</span>
                             </div>
                           )}
                         </div>
@@ -554,7 +567,7 @@ const App: React.FC = () => {
                               value={aiUserPrompt} 
                               onChange={(e) => setAiUserPrompt(e.target.value)}
                               onKeyDown={(e) => e.key === 'Enter' && handleRunAI()}
-                              placeholder="Ask anything about your current data view..."
+                              placeholder="Describe the symptoms..."
                               className="w-full bg-white border-2 border-slate-200 group-focus-within:border-indigo-500 rounded-[2.5rem] px-10 py-6 text-sm font-semibold outline-none transition-all pr-24 shadow-lg shadow-slate-200/50"
                             />
                             <button 
@@ -565,7 +578,7 @@ const App: React.FC = () => {
                               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
                             </button>
                           </div>
-                          <p className="text-[9px] text-slate-400 mt-4 text-center font-bold uppercase tracking-widest">Analyzing {filteredRecords.length} Active Audit Records</p>
+                          <p className="text-[9px] text-slate-400 mt-4 text-center font-bold uppercase tracking-widest">Examining {filteredRecords.length} Records</p>
                         </div>
                       </div>
                     </div>

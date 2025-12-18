@@ -1,5 +1,5 @@
 {
-  "name": "MarketShrink AI Analyst",
-  "description": "An enterprise-grade dashboard for analyzing market inventory shrink and spoils. Extrapolates trends, compares driver routes, and uses Gemini AI to detect misreported inventory data.",
+  "name": "The Shrink Shrink",
+  "description": "Your personal inventory doctor. Digs deep into Cantaloupe Seed data to diagnose shrinkage, extrapolate trends, and prescribe operational remedies.",
   "requestFramePermissions": []
 }
