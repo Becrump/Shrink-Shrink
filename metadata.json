@@ -1,5 +1,6 @@
 {
   "name": "The Shrink Shrink",
+  "version": "1.0.1",
   "description": "Your personal inventory doctor. Digs deep into Cantaloupe Seed data to diagnose shrinkage, extrapolate trends, and prescribe operational remedies.",
   "requestFramePermissions": []
 }

@@ -44,10 +44,10 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 const STORAGE_KEYS = {
-  RECORDS: 'shrink_guard_records_v24',
-  MONTHS: 'shrink_guard_months_v24',
-  MARKET: 'shrink_guard_market_v24',
-  SEGMENT: 'shrink_guard_segment_v24'
+  RECORDS: 'shrink_guard_records_v25',
+  MONTHS: 'shrink_guard_months_v25',
+  MARKET: 'shrink_guard_market_v25',
+  SEGMENT: 'shrink_guard_segment_v25'
 };
 
 const humanizeMarketName = (name: string): string => {
@@ -79,9 +79,9 @@ const App: React.FC = () => {
   
   const checkGlobalKey = useCallback(() => {
     try {
-      const key = window.process?.env?.API_KEY;
-      // Ensure the key isn't just an empty string or a placeholder
-      return !!(key && key.trim().length > 5 && key !== 'undefined' && key !== 'null');
+      // Check window.process first as it's our target for injection
+      const key = window.process?.env?.API_KEY || (globalThis as any).process?.env?.API_KEY;
+      return !!(key && key.trim().length > 10 && key !== 'undefined' && key !== 'null');
     } catch {
       return false;
     }
@@ -136,8 +136,7 @@ const App: React.FC = () => {
       await window.aistudio.openSelectKey();
       setHasApiKey(true);
     } else {
-      // Improved instructions for the user
-      alert("Diagnostic engine is currently offline.\n\nTo fix this:\n1. In your hosting dashboard (e.g., Cloudflare Workers), add a Secret named 'API_KEY' with your key value.\n2. Redeploy the application.\n\nThe app will then automatically find and use the key.");
+      alert("DIAGNOSTIC ENGINE OFFLINE\n\nIf you have added the 'API_KEY' Secret in Cloudflare:\n1. Go to the 'Deployments' tab.\n2. Click the three dots on your latest deployment.\n3. Select 'Retry deployment'.\n\nThis ensures the Worker re-reads the new Secret.");
     }
   };
 
@@ -150,7 +149,7 @@ const App: React.FC = () => {
         setHasApiKey(checkGlobalKey());
       }
     };
-    const interval = setInterval(checkKey, 3000);
+    const interval = setInterval(checkKey, 2000);
     checkKey();
     return () => clearInterval(interval);
   }, [checkGlobalKey]);
