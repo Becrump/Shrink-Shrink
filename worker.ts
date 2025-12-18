@@ -4,59 +4,58 @@ declare const HTMLRewriter: any;
 
 export interface Env {
   ASSETS: { fetch: typeof fetch };
-  API_KEY?: any; // Changed to any for debugging purposes
+  API_KEY?: any;
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const response = await env.ASSETS.fetch(request);
-
-    // Only modify successful HTML responses
     const contentType = response.headers.get("content-type") || "";
-    if (response.ok && contentType.includes("text/html")) {
-      // Diagnostic log for Cloudflare dashboard
-      const rawKey = env.API_KEY;
-      const keyType = typeof rawKey;
-      let apiKey = "";
 
-      if (keyType === "string") {
-        apiKey = rawKey;
-        console.log(`Worker: API_KEY detected as STRING (Length: ${apiKey.length})`);
-      } else if (rawKey && keyType === "object") {
-        // If the user accidentally chose JSON, try to extract value
-        apiKey = rawKey.API_KEY || JSON.stringify(rawKey);
-        console.warn(`Worker: API_KEY detected as OBJECT. Type: ${keyType}. Content: ${JSON.stringify(rawKey)}`);
-      } else {
-        console.error(`Worker: API_KEY is MISSING or invalid type (${keyType})`);
-      }
+    // If it's HTML, we inject our environment variables
+    if (response.ok && contentType.includes("text/html")) {
+      const apiKey = env.API_KEY || "";
+      
+      // Diagnostic logging for the Cloudflare log stream
+      console.log(`Forensic Worker: Processing HTML. API_KEY state: ${apiKey ? 'PRESENT' : 'MISSING'}`);
 
       const injectionScript = `
         (function() {
           try {
-            window.process = window.process || { env: {} };
+            window.process = window.process || {};
             window.process.env = window.process.env || {};
             window.process.env.API_KEY = ${JSON.stringify(apiKey)};
             
-            console.log("Forensic AI [Worker]: Key Type Check: ${keyType}");
-            
-            if (!window.process.env.API_KEY || window.process.env.API_KEY === "") {
-              console.error("Forensic AI [Worker]: API_KEY IS EMPTY. Action Required: Ensure variable is 'Text' or 'Secret' in Cloudflare, NOT 'JSON'.");
+            // Immediate verification
+            if (window.process.env.API_KEY) {
+              console.info("Forensic AI: Diagnostic Engine successfully linked via Edge Worker.");
             } else {
-              console.info("Forensic AI [Worker]: API_KEY successfully injected.");
+              console.error("Forensic AI: Edge Worker active, but API_KEY variable is empty in Cloudflare settings.");
             }
           } catch (e) {
-            console.error("Forensic AI [Worker]: Failed to inject environment variables", e);
+            console.error("Forensic AI: Injection failure", e);
           }
         })();
       `;
 
-      return new HTMLRewriter()
+      // Create a new response so we can modify headers
+      const newResponse = new HTMLRewriter()
         .on("head", {
           element(element: any) {
             element.prepend(`<script>${injectionScript}</script>`, { html: true });
           },
         })
         .transform(response);
+
+      // Add a diagnostic header so the user can verify the worker is actually running
+      const headers = new Headers(newResponse.headers);
+      headers.set("X-Forensic-Engine", "active");
+      headers.set("X-Key-Status", apiKey ? "bound" : "unbound");
+
+      return new Response(newResponse.body, {
+        ...newResponse,
+        headers
+      });
     }
 
     return response;
