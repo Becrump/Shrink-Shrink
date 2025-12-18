@@ -75,21 +75,19 @@ const normalizePeriod = (str: string): string => {
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
-  
+  const [workerStatus, setWorkerStatus] = useState<string>('checking');
+  const [diagLog, setDiagLog] = useState<string[]>([]);
+
+  const addLog = (msg: string) => setDiagLog(prev => [...prev.slice(-4), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+
   const checkGlobalKey = useCallback(() => {
     try {
-      // 1. Check window.process (Injected by Worker script)
       const windowKey = (window as any).process?.env?.API_KEY;
       if (windowKey && windowKey.trim().length > 0) return true;
-      
-      // 2. Check Meta Tag (Backup injected by Worker)
-      const metaKey = document.querySelector('meta[name="ai-api-key"]')?.getAttribute('content');
-      if (metaKey && metaKey.trim().length > 0) return true;
-
-      // 3. Check build-time process
+      const metaKey = document.querySelector('meta[name="ai-key-bound"]')?.getAttribute('content');
+      if (metaKey === 'true') return true;
       const processKey = typeof process !== 'undefined' ? (process.env?.API_KEY || (process.env as any)?.VITE_API_KEY) : null;
       if (processKey && processKey.trim().length > 0) return true;
-
       return false;
     } catch {
       return false;
@@ -98,6 +96,28 @@ const App: React.FC = () => {
 
   const [hasApiKey, setHasApiKey] = useState<boolean>(checkGlobalKey());
   
+  // Worker Health Check
+  useEffect(() => {
+    const checkWorker = async () => {
+      try {
+        const res = await fetch('/api/v1/health', { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          setWorkerStatus('active');
+          addLog(`Worker Active. Key Bound: ${data.key_detected}`);
+          if (data.key_detected) setHasApiKey(true);
+        } else {
+          setWorkerStatus('failed');
+          addLog("Worker check failed: HTTP " + res.status);
+        }
+      } catch (e) {
+        setWorkerStatus('unreachable');
+        addLog("Worker unreachable (Cache Bypass working?)");
+      }
+    };
+    checkWorker();
+  }, []);
+
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.RECORDS);
@@ -149,10 +169,13 @@ const App: React.FC = () => {
         const studioPresent = await window.aistudio.hasSelectedApiKey();
         isPresent = isPresent || studioPresent;
       }
-      if (isPresent !== hasApiKey) setHasApiKey(isPresent);
+      if (isPresent !== hasApiKey) {
+        setHasApiKey(isPresent);
+        addLog(`Key Status Transition: ${isPresent ? 'PRESENT' : 'MISSING'}`);
+      }
     };
 
-    const interval = setInterval(checkKey, 1500);
+    const interval = setInterval(checkKey, 2000);
     checkKey();
     return () => clearInterval(interval);
   }, [checkGlobalKey, hasApiKey]);
@@ -265,6 +288,7 @@ const App: React.FC = () => {
       await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
         if (text === "RESELECT_KEY") {
           setHasApiKey(false);
+          addLog("Key Rejected by API. Resetting...");
         } else {
           setQuickAiText(text);
         }
@@ -426,25 +450,25 @@ const App: React.FC = () => {
           <div className="bg-white max-w-2xl w-full rounded-[4rem] shadow-2xl p-16 border border-slate-200">
             <div className="w-20 h-20 bg-red-50 text-red-500 rounded-3xl flex items-center justify-center mb-10"><Icons.Alert /></div>
             <h2 className="text-4xl font-black text-slate-900 tracking-tighter mb-6">Forensic Engine: Offline</h2>
-            <p className="text-slate-600 font-medium leading-relaxed mb-10 text-lg">
-              The AI Diagnostic Engine cannot find its API_KEY. This usually means the <strong>Edge Worker</strong> is being bypassed by the Cloudflare Cache.
+            <p className="text-slate-600 font-medium leading-relaxed mb-8 text-lg">
+              The AI Engine is currently disconnected. This is usually due to <strong>Cloudflare Edge Caching</strong> or a missing environment variable.
             </p>
             
             <div className="space-y-6 mb-12">
                <div className="bg-slate-50 p-8 rounded-3xl border border-slate-100">
-                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Required Actions:</h4>
+                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Forensic Diagnostics:</h4>
+                  <div className="space-y-2 font-mono text-[10px] text-slate-500 bg-slate-100 p-4 rounded-xl mb-6">
+                    {diagLog.map((log, i) => <div key={i}>{log}</div>)}
+                    <div>Worker Status: <span className={workerStatus === 'active' ? 'text-emerald-600 font-bold' : 'text-red-500 font-bold'}>{workerStatus.toUpperCase()}</span></div>
+                  </div>
                   <ul className="space-y-4">
                     <li className="flex gap-4 text-sm font-bold text-slate-700">
                        <span className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[10px] shrink-0">1</span>
-                       Verify 'API_KEY' is added as a 'Text' variable in Cloudflare Dashboard.
+                       Check Cloudflare Dashboard: <strong>Caching -> Purge Cache -> Purge Everything</strong>.
                     </li>
                     <li className="flex gap-4 text-sm font-bold text-slate-700">
                        <span className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[10px] shrink-0">2</span>
-                       Ensure the custom domain 'shrink.pmaseed.com' is assigned to your Worker routes.
-                    </li>
-                    <li className="flex gap-4 text-sm font-bold text-slate-700">
-                       <span className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[10px] shrink-0">3</span>
-                       Click "Purge Cache" in Cloudflare to clear the old HTML without the key.
+                       Ensure 'API_KEY' is a <strong>Text</strong> variable in Cloudflare Pages settings.
                     </li>
                   </ul>
                </div>
