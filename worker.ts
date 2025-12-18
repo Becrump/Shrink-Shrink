@@ -9,55 +9,55 @@ export interface Env {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // 1. Fetch the original asset
     const response = await env.ASSETS.fetch(request);
-    const contentType = response.headers.get("content-type") || "";
+    
+    // 2. Check if it's an HTML file
+    const url = new URL(request.url);
+    const isHtml = response.headers.get("content-type")?.includes("text/html") || url.pathname.endsWith('/') || url.pathname.endsWith('.html');
 
-    // If it's HTML, we inject our environment variables
-    if (response.ok && contentType.includes("text/html")) {
+    if (response.ok && isHtml) {
       const apiKey = env.API_KEY || "";
       
-      // Diagnostic logging for the Cloudflare log stream
-      console.log(`Forensic Worker: Processing HTML. API_KEY state: ${apiKey ? 'PRESENT' : 'MISSING'}`);
+      // LOGGING: This appears in your Cloudflare "Real-time Logs"
+      console.log(`Forensic Engine: Injecting Key (Length: ${apiKey.length}) into ${url.pathname}`);
 
-      const injectionScript = `
-        (function() {
-          try {
-            window.process = window.process || {};
-            window.process.env = window.process.env || {};
-            window.process.env.API_KEY = ${JSON.stringify(apiKey)};
-            
-            // Immediate verification
-            if (window.process.env.API_KEY) {
-              console.info("Forensic AI: Diagnostic Engine successfully linked via Edge Worker.");
-            } else {
-              console.error("Forensic AI: Edge Worker active, but API_KEY variable is empty in Cloudflare settings.");
-            }
-          } catch (e) {
-            console.error("Forensic AI: Injection failure", e);
-          }
-        })();
+      // We inject both a script (for process.env emulation) and a meta tag (for backup)
+      const injection = `
+        <meta name="ai-api-key" content="${apiKey}">
+        <script>
+          window.process = window.process || {};
+          window.process.env = window.process.env || {};
+          window.process.env.API_KEY = ${JSON.stringify(apiKey)};
+          console.info("Forensic Engine: Edge injection verified.");
+        </script>
       `;
 
-      // Create a new response so we can modify headers
-      const newResponse = new HTMLRewriter()
+      // 3. Transform the response
+      const transformedResponse = new HTMLRewriter()
         .on("head", {
           element(element: any) {
-            element.prepend(`<script>${injectionScript}</script>`, { html: true });
+            element.prepend(injection, { html: true });
           },
         })
         .transform(response);
 
-      // Add a diagnostic header so the user can verify the worker is actually running
-      const headers = new Headers(newResponse.headers);
-      headers.set("X-Forensic-Engine", "active");
-      headers.set("X-Key-Status", apiKey ? "bound" : "unbound");
+      // 4. CLOBBER CACHE HEADERS: Force Cloudflare to run this worker every time
+      const newHeaders = new Headers(transformedResponse.headers);
+      newHeaders.set("X-Forensic-Engine", "active");
+      newHeaders.set("X-Key-Status", apiKey ? "bound" : "unbound");
+      newHeaders.set("Cache-Control", "no-cache, no-store, must-revalidate");
+      newHeaders.set("Pragma", "no-cache");
+      newHeaders.set("Expires", "0");
 
-      return new Response(newResponse.body, {
-        ...newResponse,
-        headers
+      return new Response(transformedResponse.body, {
+        status: transformedResponse.status,
+        statusText: transformedResponse.statusText,
+        headers: newHeaders
       });
     }
 
+    // For non-HTML (JS, CSS, Images), serve normally
     return response;
   },
 };

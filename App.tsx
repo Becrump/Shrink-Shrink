@@ -76,14 +76,17 @@ const normalizePeriod = (str: string): string => {
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
   
-  // Robust check that prevents bundler optimization from removing the check
   const checkGlobalKey = useCallback(() => {
     try {
-      // 1. Check window (Worker injection)
+      // 1. Check window.process (Injected by Worker script)
       const windowKey = (window as any).process?.env?.API_KEY;
       if (windowKey && windowKey.trim().length > 0) return true;
       
-      // 2. Check global process (Build-time injection)
+      // 2. Check Meta Tag (Backup injected by Worker)
+      const metaKey = document.querySelector('meta[name="ai-api-key"]')?.getAttribute('content');
+      if (metaKey && metaKey.trim().length > 0) return true;
+
+      // 3. Check build-time process
       const processKey = typeof process !== 'undefined' ? (process.env?.API_KEY || (process.env as any)?.VITE_API_KEY) : null;
       if (processKey && processKey.trim().length > 0) return true;
 
@@ -142,26 +145,22 @@ const App: React.FC = () => {
   useEffect(() => {
     const checkKey = async () => {
       let isPresent = checkGlobalKey();
-      
       if (window.aistudio) {
         const studioPresent = await window.aistudio.hasSelectedApiKey();
         isPresent = isPresent || studioPresent;
       }
-      
-      setHasApiKey(isPresent);
+      if (isPresent !== hasApiKey) setHasApiKey(isPresent);
     };
 
-    const interval = setInterval(checkKey, 1000);
+    const interval = setInterval(checkKey, 1500);
     checkKey();
     return () => clearInterval(interval);
-  }, [checkGlobalKey]);
+  }, [checkGlobalKey, hasApiKey]);
 
   const handleSelectKey = async () => {
     if (window.aistudio) {
       await window.aistudio.openSelectKey();
       setHasApiKey(true);
-    } else {
-      alert("Forensic Engine: API_KEY not detected.\n\nRequired Action:\n1. Go to Cloudflare Dashboard.\n2. Workers & Pages -> shrink-shrink.\n3. Settings -> Variables.\n4. Add 'API_KEY' as a variable (not secret).\n5. REDEPLOY the project.");
     }
   };
 
@@ -252,7 +251,7 @@ const App: React.FC = () => {
   }, [filteredRecords]);
 
   const handleRunQuickAI = async (customPrompt?: string) => {
-    if (!hasApiKey) return handleSelectKey();
+    if (!hasApiKey) return;
     const question = customPrompt || aiUserPrompt;
     if (!question.trim() || filteredRecords.length === 0 || isQuickAnalyzing) return;
     
@@ -266,7 +265,6 @@ const App: React.FC = () => {
       await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
         if (text === "RESELECT_KEY") {
           setHasApiKey(false);
-          handleSelectKey();
         } else {
           setQuickAiText(text);
         }
@@ -278,7 +276,7 @@ const App: React.FC = () => {
   };
 
   const startDeepDive = async () => {
-    if (!hasApiKey) return handleSelectKey();
+    if (!hasApiKey) return;
     if (deepDiveStatus === 'ready') {
       setQuickAiText(deepDiveResult);
       setDeepDiveStatus('idle');
@@ -291,7 +289,6 @@ const App: React.FC = () => {
       if (result === "RESELECT_KEY") {
         setHasApiKey(false);
         setDeepDiveStatus('idle');
-        handleSelectKey();
         return;
       }
       setDeepDiveResult(result);
@@ -423,6 +420,46 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans text-slate-900">
+      {/* Diagnostic Alert Overlay */}
+      {!hasApiKey && (
+        <div className="fixed inset-0 z-[1000] bg-slate-900/90 backdrop-blur-3xl flex items-center justify-center p-6 animate-in fade-in duration-500">
+          <div className="bg-white max-w-2xl w-full rounded-[4rem] shadow-2xl p-16 border border-slate-200">
+            <div className="w-20 h-20 bg-red-50 text-red-500 rounded-3xl flex items-center justify-center mb-10"><Icons.Alert /></div>
+            <h2 className="text-4xl font-black text-slate-900 tracking-tighter mb-6">Forensic Engine: Offline</h2>
+            <p className="text-slate-600 font-medium leading-relaxed mb-10 text-lg">
+              The AI Diagnostic Engine cannot find its API_KEY. This usually means the <strong>Edge Worker</strong> is being bypassed by the Cloudflare Cache.
+            </p>
+            
+            <div className="space-y-6 mb-12">
+               <div className="bg-slate-50 p-8 rounded-3xl border border-slate-100">
+                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Required Actions:</h4>
+                  <ul className="space-y-4">
+                    <li className="flex gap-4 text-sm font-bold text-slate-700">
+                       <span className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[10px] shrink-0">1</span>
+                       Verify 'API_KEY' is added as a 'Text' variable in Cloudflare Dashboard.
+                    </li>
+                    <li className="flex gap-4 text-sm font-bold text-slate-700">
+                       <span className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[10px] shrink-0">2</span>
+                       Ensure the custom domain 'shrink.pmaseed.com' is assigned to your Worker routes.
+                    </li>
+                    <li className="flex gap-4 text-sm font-bold text-slate-700">
+                       <span className="w-6 h-6 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[10px] shrink-0">3</span>
+                       Click "Purge Cache" in Cloudflare to clear the old HTML without the key.
+                    </li>
+                  </ul>
+               </div>
+            </div>
+
+            <div className="flex gap-4">
+               {window.aistudio && (
+                 <button onClick={handleSelectKey} className="flex-1 bg-indigo-600 text-white py-6 rounded-3xl font-black shadow-2xl hover:bg-indigo-700 transition-all uppercase tracking-widest text-xs">Manual Key Connect</button>
+               )}
+               <button onClick={() => window.location.reload()} className="flex-1 border-4 border-slate-100 text-slate-400 py-6 rounded-3xl font-black hover:bg-slate-50 transition-all uppercase tracking-widest text-xs">Refresh & Retry</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isProcessing && (
         <div className="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-xl flex items-center justify-center animate-in fade-in duration-300">
            <div className="bg-white p-12 rounded-[4rem] shadow-2xl flex flex-col items-center gap-8 border border-slate-200 max-w-sm w-full text-center">
@@ -447,7 +484,7 @@ const App: React.FC = () => {
           </h1>
           <div className="mt-8 space-y-2">
             {!hasApiKey ? (
-              <button onClick={handleSelectKey} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">Connect AI Hub</button>
+              <button onClick={() => window.location.reload()} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">Syncing Engine...</button>
             ) : (
               <div className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Diagnostic Engine Active
