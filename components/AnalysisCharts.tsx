@@ -2,18 +2,13 @@
 import React from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  Legend, Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ScatterChart, Scatter, ZAxis, Cell, ReferenceLine
+  Legend, Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ScatterChart, Scatter, ZAxis, Cell, ReferenceLine, LabelList
 } from 'recharts';
 import { ShrinkRecord } from '../types';
 
 interface ChartsProps {
   data: ShrinkRecord[];
 }
-
-const MONTH_ORDER = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'
-];
 
 export const AnalysisCharts: React.FC<ChartsProps> = ({ data }) => {
   // 1. Overage vs Shortage Impact ($)
@@ -31,7 +26,7 @@ export const AnalysisCharts: React.FC<ChartsProps> = ({ data }) => {
     return Object.values(markets).sort((a, b) => (b.shortage + b.overage) - (a.shortage + a.overage)).slice(0, 10);
   }, [data]);
 
-  // 2. Itemized Leaderboards (Shrink & Overage)
+  // 2. Itemized Leaderboards
   const itemLeaderboards = React.useMemo(() => {
     const shrinkMap: Record<string, number> = {};
     const overageMap: Record<string, number> = {};
@@ -39,45 +34,26 @@ export const AnalysisCharts: React.FC<ChartsProps> = ({ data }) => {
     data.forEach(r => {
       const shrinkVal = r.shrinkLoss || 0;
       const overageVal = r.invVariance > 0 ? (r.invVariance * (r.unitCost || 0)) : 0;
-
       if (shrinkVal > 0) shrinkMap[r.itemName] = (shrinkMap[r.itemName] || 0) + shrinkVal;
       if (overageVal > 0) overageMap[r.itemName] = (overageMap[r.itemName] || 0) + overageVal;
     });
 
-    const topShrink = Object.entries(shrinkMap)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 5)
-      .map(([name, value]) => ({ name, value }));
-
-    const topOverage = Object.entries(overageMap)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 5)
-      .map(([name, value]) => ({ name, value }));
-
+    const topShrink = Object.entries(shrinkMap).sort(([, a], [, b]) => b - a).slice(0, 5).map(([name, value]) => ({ name, value }));
+    const topOverage = Object.entries(overageMap).sort(([, a], [, b]) => b - a).slice(0, 5).map(([name, value]) => ({ name, value }));
     return { topShrink, topOverage };
   }, [data]);
 
   // 3. Procedural Integrity Probability
   const auditIntegrity = React.useMemo(() => {
-    const markets: Record<string, { 
-      name: string; 
-      receivingErrorProb: number; 
-      reportingSloppiness: number;
-      theftLikelihood: number;
-    }> = {};
-
+    const markets: Record<string, { name: string; receivingErrorProb: number; reportingSloppiness: number; theftLikelihood: number; }> = {};
     data.forEach(r => {
       if (!markets[r.marketName]) markets[r.marketName] = { name: r.marketName, receivingErrorProb: 0, reportingSloppiness: 0, theftLikelihood: 0 };
-      
       const financialImpact = Math.abs(r.invVariance * (r.unitCost || 0));
       if (r.invVariance > 0) {
         markets[r.marketName].receivingErrorProb += financialImpact;
       } else {
-        if (r.unitCost > 5) {
-          markets[r.marketName].theftLikelihood += financialImpact;
-        } else {
-          markets[r.marketName].reportingSloppiness += financialImpact;
-        }
+        if (r.unitCost > 5) markets[r.marketName].theftLikelihood += financialImpact;
+        else markets[r.marketName].reportingSloppiness += financialImpact;
       }
     });
 
@@ -164,63 +140,59 @@ export const AnalysisCharts: React.FC<ChartsProps> = ({ data }) => {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="bg-white p-8 rounded-[3rem] border border-slate-200 shadow-sm">
-          <header className="mb-8">
-            <h3 className="text-2xl font-black text-slate-900 tracking-tight">Top Shrink Items</h3>
-            <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">Highest Dollar Loss per Unit</p>
+          <header className="mb-6">
+            <h3 className="text-xl font-black text-slate-900 tracking-tight">Top Shrink Items</h3>
+            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-1">Total Dollar Loss</p>
           </header>
           <div className="space-y-4">
             {itemLeaderboards.topShrink.map((item, idx) => (
               <div key={idx} className="group">
                 <div className="flex justify-between items-end mb-1">
-                  <span className="text-xs font-black text-slate-700 truncate max-w-[70%] uppercase tracking-tight">{item.name}</span>
-                  <span className="text-xs font-black text-red-500">${item.value.toLocaleString()}</span>
+                  <span className="text-[11px] font-black text-slate-700 uppercase tracking-tight truncate max-w-[75%]">{item.name}</span>
+                  <span className="text-[11px] font-black text-red-500">${item.value.toLocaleString()}</span>
                 </div>
                 <div className="h-2 bg-slate-50 rounded-full overflow-hidden">
                   <div 
-                    className="h-full bg-red-400 transition-all duration-1000 group-hover:bg-red-500" 
+                    className="h-full bg-red-400 transition-all duration-1000" 
                     style={{ width: `${(item.value / (itemLeaderboards.topShrink[0]?.value || 1)) * 100}%` }}
                   />
                 </div>
               </div>
             ))}
-            {itemLeaderboards.topShrink.length === 0 && (
-              <p className="text-center py-12 text-slate-300 font-bold uppercase text-[10px] tracking-widest">No Shrink Recorded</p>
-            )}
           </div>
         </div>
-
         <div className="bg-white p-8 rounded-[3rem] border border-slate-200 shadow-sm">
-          <header className="mb-8">
-            <h3 className="text-2xl font-black text-slate-900 tracking-tight">Top Overage Items</h3>
-            <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">Highest Operational Gain (Receiving Errors)</p>
+          <header className="mb-6">
+            <h3 className="text-xl font-black text-slate-900 tracking-tight">Top Overage Items</h3>
+            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-1">Likely Receiving Errors</p>
           </header>
           <div className="space-y-4">
             {itemLeaderboards.topOverage.map((item, idx) => (
               <div key={idx} className="group">
                 <div className="flex justify-between items-end mb-1">
-                  <span className="text-xs font-black text-slate-700 truncate max-w-[70%] uppercase tracking-tight">{item.name}</span>
-                  <span className="text-xs font-black text-emerald-500">${item.value.toLocaleString()}</span>
+                  <span className="text-[11px] font-black text-slate-700 uppercase tracking-tight truncate max-w-[75%]">{item.name}</span>
+                  <span className="text-[11px] font-black text-emerald-500">${item.value.toLocaleString()}</span>
                 </div>
                 <div className="h-2 bg-slate-50 rounded-full overflow-hidden">
                   <div 
-                    className="h-full bg-emerald-400 transition-all duration-1000 group-hover:bg-emerald-500" 
+                    className="h-full bg-emerald-400 transition-all duration-1000" 
                     style={{ width: `${(item.value / (itemLeaderboards.topOverage[0]?.value || 1)) * 100}%` }}
                   />
                 </div>
               </div>
             ))}
-            {itemLeaderboards.topOverage.length === 0 && (
-              <p className="text-center py-12 text-slate-300 font-bold uppercase text-[10px] tracking-widest">No Overage Recorded</p>
-            )}
           </div>
         </div>
       </div>
 
       <div className="bg-white p-8 rounded-[3rem] border border-slate-200 shadow-sm">
-        <h3 className="text-2xl font-black text-slate-900 tracking-tight mb-8">Risk/Revenue Scatter Quadrant</h3>
-        <div className="h-[400px]">
+        <header className="mb-4">
+          <h3 className="text-2xl font-black text-slate-900 tracking-tight">Risk/Revenue Scatter Quadrant</h3>
+          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">Locations segmented by performance metrics</p>
+        </header>
+        <div className="h-[450px]">
           <ResponsiveContainer width="100%" height="100%">
-            <ScatterChart>
+            <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={true} stroke="#f1f5f9" />
               <XAxis type="number" dataKey="revenue" name="Revenue" unit="$" fontSize={11} axisLine={false} tickLine={false} />
               <YAxis type="number" dataKey="rate" name="Shrink Rate" unit="%" fontSize={11} axisLine={false} tickLine={false} />
@@ -231,8 +203,8 @@ export const AnalysisCharts: React.FC<ChartsProps> = ({ data }) => {
                   if (active && payload && payload.length) {
                     const data = payload[0].payload;
                     return (
-                      <div className="bg-white p-4 rounded-2xl shadow-xl border border-slate-100 min-w-[200px]">
-                        <p className="text-xs font-black text-slate-900 uppercase mb-2 border-b border-slate-50 pb-2">{data.name}</p>
+                      <div className="bg-white p-4 rounded-2xl shadow-xl border border-slate-100 min-w-[200px] z-50">
+                        <p className="text-xs font-black text-indigo-600 uppercase mb-2 border-b border-slate-50 pb-2">{data.name}</p>
                         <div className="space-y-1.5">
                           <div className="flex justify-between gap-4">
                             <span className="text-[10px] font-black text-slate-400 uppercase">Revenue</span>
@@ -259,6 +231,7 @@ export const AnalysisCharts: React.FC<ChartsProps> = ({ data }) => {
                 {marketMetrics.map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={entry.rate > avgRate ? (entry.revenue > avgRev ? '#ef4444' : '#f97316') : '#10b981'} />
                 ))}
+                <LabelList dataKey="name" position="top" offset={10} style={{ fontSize: '10px', fontWeight: 'bold', fill: '#475569', pointerEvents: 'none' }} />
               </Scatter>
             </ScatterChart>
           </ResponsiveContainer>

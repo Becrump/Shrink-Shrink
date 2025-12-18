@@ -1,0 +1,11 @@
+{
+  "name": "market-shrink-ai-analyst",
+  "compatibility_date": "2025-02-14",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

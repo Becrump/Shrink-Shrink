@@ -498,76 +498,74 @@ const App: React.FC = () => {
               )}
 
               {view === 'ai-insights' && (
-                <div className="max-w-5xl mx-auto pb-20 grid grid-cols-1 lg:grid-cols-3 gap-8 items-start animate-in slide-in-from-bottom-5">
-                  {/* Left Column: Sample Questions */}
-                  <div className="space-y-4">
-                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-4">Suggested Audits</h4>
-                    {SUGGESTED_QUESTIONS.map((q, i) => (
-                      <button 
-                        key={i} 
-                        onClick={() => handleRunAI(q)} 
-                        disabled={isAnalyzing}
-                        className="w-full text-left bg-white p-6 rounded-3xl border border-slate-100 shadow-sm hover:border-indigo-400 hover:shadow-lg hover:shadow-indigo-50 transition-all text-xs font-bold text-slate-700 leading-relaxed group"
-                      >
-                        <div className="flex items-center gap-3">
-                           <div className="w-1 h-8 bg-slate-100 group-hover:bg-indigo-400 rounded-full transition-colors" />
-                           {q}
+                <div className="max-w-5xl mx-auto pb-20 animate-in slide-in-from-bottom-5">
+                  <div className="bg-white rounded-[4rem] border border-slate-200 shadow-2xl overflow-hidden min-h-[700px] flex flex-col">
+                    <div className="bg-slate-900 p-8 text-white flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 bg-indigo-500 rounded-2xl flex items-center justify-center text-white"><Icons.AI /></div>
+                        <div>
+                          <h3 className="text-xl font-black tracking-tight">Forensic AI Assistant</h3>
+                          <p className="text-slate-400 text-[9px] font-bold uppercase tracking-widest">Interactive Audit Intelligence</p>
                         </div>
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Right Column: Chat/Results */}
-                  <div className="lg:col-span-2 space-y-6">
-                    <div className="bg-white rounded-[4rem] border border-slate-200 shadow-2xl overflow-hidden min-h-[600px] flex flex-col">
-                      <div className="bg-slate-900 p-8 text-white flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 bg-indigo-500 rounded-2xl flex items-center justify-center text-white"><Icons.AI /></div>
-                          <div>
-                            <h3 className="text-xl font-black tracking-tight">Forensic AI Assistant</h3>
-                            <p className="text-slate-400 text-[9px] font-bold uppercase tracking-widest">Cantaloupe Seed Intelligence Engine</p>
-                          </div>
-                        </div>
-                        <button onClick={() => { setAiAnalysis(''); setAiUserPrompt(''); setView('dashboard'); }} className="px-5 py-2 hover:bg-white/10 rounded-xl font-bold text-[10px] uppercase transition-all">Exit Chat</button>
                       </div>
-                      
-                      <div ref={scrollRef} className="p-12 flex-1 overflow-y-auto custom-scrollbar bg-slate-50/30">
-                        {aiAnalysis ? (
-                          <div className="prose prose-slate max-w-none text-slate-700 whitespace-pre-wrap leading-relaxed font-medium bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm animate-in fade-in slide-in-from-bottom-2">
-                            {aiAnalysis}
-                          </div>
-                        ) : (
-                          <div className="flex flex-col items-center justify-center py-32 text-center">
-                            <div className="w-16 h-16 bg-slate-100 text-slate-300 rounded-full flex items-center justify-center mb-6"><Icons.AI /></div>
-                            <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Awaiting forensic query...</p>
-                            <p className="text-slate-300 text-sm mt-2 font-medium">Ask about market anomalies, trends, or specific item losses.</p>
-                          </div>
-                        )}
-                        {isAnalyzing && (
-                          <div className="flex gap-4 mt-8 items-center bg-indigo-50/50 p-6 rounded-3xl border border-indigo-100">
-                             <div className="animate-spin h-5 w-5 border-2 border-indigo-600 border-t-transparent rounded-full" />
-                             <span className="text-xs font-black text-indigo-600 uppercase tracking-widest">Aggregating Seed Datasets...</span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="p-8 bg-white border-t border-slate-100">
-                        <div className="relative group">
-                          <input 
-                            type="text" 
-                            value={aiUserPrompt} 
-                            onChange={(e) => setAiUserPrompt(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleRunAI()}
-                            placeholder="Ask a question about your market shrink..."
-                            className="w-full bg-slate-100 border-2 border-transparent group-focus-within:border-indigo-500 rounded-[2rem] px-8 py-5 text-sm font-medium outline-none transition-all pr-20 shadow-inner"
-                          />
-                          <button 
-                            onClick={() => handleRunAI()} 
-                            disabled={isAnalyzing || !aiUserPrompt.trim()}
-                            className="absolute right-3 top-3 w-12 h-12 bg-indigo-600 text-white rounded-full flex items-center justify-center shadow-lg hover:bg-indigo-700 disabled:bg-slate-300 transition-all"
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+                      <button onClick={() => setView('dashboard')} className="px-5 py-2 hover:bg-white/10 rounded-xl font-bold text-[10px] uppercase transition-all border border-white/20">Return to Charts</button>
+                    </div>
+                    
+                    <div className="flex-1 flex flex-col lg:flex-row">
+                      {/* Side Suggestions */}
+                      <div className="lg:w-80 bg-slate-50 border-r border-slate-100 p-8 space-y-4">
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Quick Audits</h4>
+                        {SUGGESTED_QUESTIONS.map((q, i) => (
+                          <button key={i} onClick={() => handleRunAI(q)} disabled={isAnalyzing} className="w-full text-left bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:border-indigo-400 hover:shadow-md transition-all text-xs font-bold text-slate-600 leading-relaxed group">
+                            <div className="flex gap-3">
+                              <span className="text-indigo-400 font-black">Q.</span>
+                              {q}
+                            </div>
                           </button>
+                        ))}
+                      </div>
+
+                      {/* Main Interaction Area */}
+                      <div className="flex-1 flex flex-col">
+                        <div ref={scrollRef} className="p-12 flex-1 overflow-y-auto custom-scrollbar bg-white relative">
+                          {aiAnalysis ? (
+                            <div className="prose prose-slate max-w-none text-slate-700 whitespace-pre-wrap leading-relaxed font-medium bg-slate-50/50 p-10 rounded-[3rem] border border-slate-100 animate-in fade-in duration-500">
+                              {aiAnalysis}
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-center justify-center py-32 text-center opacity-50">
+                              <div className="w-20 h-20 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mb-6"><Icons.AI /></div>
+                              <h4 className="text-lg font-black text-slate-900 mb-1">Cantaloupe Seed Intelligence Ready</h4>
+                              <p className="text-slate-400 text-sm max-w-sm">Ask me about your market shrinkage, identify operational leaks, or find receiving anomalies.</p>
+                            </div>
+                          )}
+                          {isAnalyzing && (
+                            <div className="mt-8 flex gap-4 items-center bg-indigo-50/50 p-6 rounded-3xl border border-indigo-100 animate-pulse">
+                               <div className="animate-spin h-5 w-5 border-2 border-indigo-600 border-t-transparent rounded-full" />
+                               <span className="text-xs font-black text-indigo-600 uppercase tracking-widest">Performing Forensic Calculation...</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="p-10 bg-slate-50/80 border-t border-slate-100">
+                          <div className="relative group">
+                            <input 
+                              type="text" 
+                              value={aiUserPrompt} 
+                              onChange={(e) => setAiUserPrompt(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && handleRunAI()}
+                              placeholder="Ask anything about your current data view..."
+                              className="w-full bg-white border-2 border-slate-200 group-focus-within:border-indigo-500 rounded-[2.5rem] px-10 py-6 text-sm font-semibold outline-none transition-all pr-24 shadow-lg shadow-slate-200/50"
+                            />
+                            <button 
+                              onClick={() => handleRunAI()} 
+                              disabled={isAnalyzing || !aiUserPrompt.trim()}
+                              className="absolute right-4 top-4 w-14 h-14 bg-indigo-600 text-white rounded-full flex items-center justify-center shadow-xl hover:bg-indigo-700 disabled:bg-slate-300 transition-all hover:-translate-y-0.5"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+                            </button>
+                          </div>
+                          <p className="text-[9px] text-slate-400 mt-4 text-center font-bold uppercase tracking-widest">Analyzing {filteredRecords.length} Active Audit Records</p>
                         </div>
                       </div>
                     </div>
