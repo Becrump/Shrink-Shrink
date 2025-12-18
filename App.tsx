@@ -76,16 +76,16 @@ const normalizePeriod = (str: string): string => {
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
   
-  // Safely check for API key presence
-  const getInitialApiKeyStatus = () => {
+  const checkGlobalKey = useCallback(() => {
     try {
-      return !!(window.process?.env?.API_KEY);
+      const key = window.process?.env?.API_KEY;
+      return !!(key && key.trim().length > 0);
     } catch {
       return false;
     }
-  };
+  }, []);
 
-  const [hasApiKey, setHasApiKey] = useState<boolean>(getInitialApiKeyStatus);
+  const [hasApiKey, setHasApiKey] = useState<boolean>(checkGlobalKey);
   
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
@@ -135,21 +135,23 @@ const App: React.FC = () => {
     const checkKey = async () => {
       if (window.aistudio) {
         const selected = await window.aistudio.hasSelectedApiKey();
-        setHasApiKey(selected || !!window.process?.env?.API_KEY);
+        setHasApiKey(selected || checkGlobalKey());
       } else {
-        setHasApiKey(!!window.process?.env?.API_KEY);
+        setHasApiKey(checkGlobalKey());
       }
     };
+    // Periodic check in case injection happens late
+    const interval = setInterval(checkKey, 2000);
     checkKey();
-  }, []);
+    return () => clearInterval(interval);
+  }, [checkGlobalKey]);
 
   const handleSelectKey = async () => {
     if (window.aistudio) {
       await window.aistudio.openSelectKey();
-      // Assume success as per platform requirements
       setHasApiKey(true);
     } else {
-      alert("Please ensure the API_KEY environment variable is set in your Cloudflare project settings.");
+      alert("API_KEY not found. Please set it in Cloudflare Dashboard -> shrink-shrink -> Settings -> Variables.");
     }
   };
 
@@ -240,7 +242,7 @@ const App: React.FC = () => {
   }, [filteredRecords]);
 
   const handleRunQuickAI = async (customPrompt?: string) => {
-    if (!hasApiKey && !window.process?.env?.API_KEY) return handleSelectKey();
+    if (!hasApiKey) return handleSelectKey();
     const question = customPrompt || aiUserPrompt;
     if (!question.trim() || filteredRecords.length === 0 || isQuickAnalyzing) return;
     
@@ -259,7 +261,7 @@ const App: React.FC = () => {
   };
 
   const startDeepDive = async () => {
-    if (!hasApiKey && !window.process?.env?.API_KEY) return handleSelectKey();
+    if (!hasApiKey) return handleSelectKey();
     if (deepDiveStatus === 'ready') {
       setQuickAiText(deepDiveResult);
       setDeepDiveStatus('idle');
@@ -427,7 +429,7 @@ const App: React.FC = () => {
             The Shrink Shrink
           </h1>
           <div className="mt-8 space-y-2">
-            {(!hasApiKey && !window.process?.env?.API_KEY) ? (
+            {!hasApiKey ? (
               <button onClick={handleSelectKey} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">Connect AI Hub</button>
             ) : (
               <div className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
@@ -575,7 +577,7 @@ const App: React.FC = () => {
               <div className="bg-white rounded-[5rem] shadow-2xl overflow-hidden min-h-[850px] flex flex-col border border-slate-200">
                 <div className="bg-slate-900 p-16 text-white flex items-center justify-between">
                   <div className="flex items-center gap-8">
-                    <div className="w-16 h-16 bg-indigo-500 rounded-[2rem] flex items-center justify-center text-white shadow-2xl shadow-indigo-500/50"><Icons.AI /></div>
+                    <div className="w-16 h-16 bg-indigo-50 rounded-[2rem] flex items-center justify-center text-white shadow-2xl shadow-indigo-500/50"><Icons.AI /></div>
                     <div>
                       <h3 className="text-4xl font-black tracking-tighter uppercase">Forensic Vault</h3>
                       <p className="text-slate-400 text-xs font-bold uppercase tracking-[0.2em] mt-2">Inventory Integrity Analyst v5.3</p>

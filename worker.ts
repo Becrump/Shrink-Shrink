@@ -16,6 +16,13 @@ export default {
       // Ensure the key exists in the worker environment
       const apiKey = env.API_KEY || "";
       
+      // Diagnostic log for Cloudflare dashboard (Real-time logs)
+      if (!apiKey) {
+        console.error("WORKER ALERT: API_KEY is missing from environment variables!");
+      } else {
+        console.log(`WORKER LOG: API_KEY detected (Length: ${apiKey.length})`);
+      }
+      
       // Inject the script into the top of the <head> using a robust regex
       const injection = `
         <script>
@@ -24,11 +31,11 @@ export default {
             window.process.env = window.process.env || {};
             window.process.env.API_KEY = ${JSON.stringify(apiKey)};
             
-            // Diagnostics to help the user verify deployment status
+            // Diagnostics to help the user verify deployment status in browser console
             if (!window.process.env.API_KEY || window.process.env.API_KEY.trim() === "") {
-              console.warn("Forensic AI Engine: API_KEY variable detected as empty. Check Cloudflare Dashboard -> Settings -> Variables.");
+              console.warn("Forensic AI Engine: API_KEY variable detected as EMPTY in browser. Check Cloudflare Dashboard Variables.");
             } else {
-              console.info("Forensic AI Engine: Environment variables synchronized.");
+              console.info("Forensic AI Engine: API_KEY successfully synchronized from Cloudflare.");
             }
           })();
         </script>
