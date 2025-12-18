@@ -39,10 +39,10 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 const STORAGE_KEYS = {
-  RECORDS: 'shrink_records_v4',
-  MONTHS: 'shrink_months_v4',
-  MARKET: 'shrink_market_v4',
-  SEGMENT: 'shrink_segment_v4'
+  RECORDS: 'shrink_records_v5',
+  MONTHS: 'shrink_months_v5',
+  MARKET: 'shrink_market_v5',
+  SEGMENT: 'shrink_segment_v5'
 };
 
 const humanizeMarketName = (name: string): string => {
@@ -71,25 +71,26 @@ const normalizePeriod = (str: string): string => {
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
   const [isKeyActive, setIsKeyActive] = useState<boolean>(false);
-  const [debugInfo, setDebugInfo] = useState<any>(null);
-  const [showDebug, setShowDebug] = useState(false);
+  const [showSystemDetails, setShowSystemDetails] = useState(false);
+  const [systemInfo, setSystemInfo] = useState<{browserKey: string, workerData: any} | null>(null);
   
   const checkKey = useCallback(() => {
     const key = window.process?.env?.API_KEY;
-    const isValid = !!(key && key.length > 10 && key !== '%%API_KEY_INJECTION%%' && key !== 'undefined' && key !== 'MISSING_IN_WORKER_ENV');
+    const isValid = !!(key && key.length > 10 && key !== '%%API_KEY_INJECTION%%' && key !== 'undefined' && key !== 'MISSING_IN_WORKER');
     setIsKeyActive(isValid);
     return isValid;
   }, []);
 
-  const runDiagnostics = async () => {
+  const openIntegrityCheck = async () => {
     try {
       const res = await fetch('/api/debug-env');
-      const data = await res.json();
-      setDebugInfo(data);
-      setShowDebug(true);
+      const workerData = await res.json();
+      const browserKey = window.process?.env?.API_KEY || "undefined";
+      setSystemInfo({ browserKey, workerData });
+      setShowSystemDetails(true);
     } catch (e) {
-      setDebugInfo({ error: "Could not reach Worker diagnostic endpoint." });
-      setShowDebug(true);
+      setSystemInfo({ browserKey: window.process?.env?.API_KEY || "undefined", workerData: { error: "Failed to reach Worker diagnostic endpoint" } });
+      setShowSystemDetails(true);
     }
   };
 
@@ -159,7 +160,6 @@ const App: React.FC = () => {
     return set;
   }, [records]);
 
-  // Added timelineStats to calculate per-month shrink data for the month selector display
   const timelineStats = useMemo(() => {
     const ts: Record<string, { shrink: number; revenue: number }> = {};
     records.forEach(r => {
@@ -170,11 +170,6 @@ const App: React.FC = () => {
       ts[norm].revenue += r.totalRevenue || 0;
     });
     return ts;
-  }, [records]);
-
-  const marketOptions = useMemo(() => {
-    const names = Array.from(new Set(records.map(r => r.marketName))).filter(Boolean).sort();
-    return ['All', ...names];
   }, [records]);
 
   const stats = useMemo(() => {
@@ -215,7 +210,7 @@ const App: React.FC = () => {
       await queryMarketAIQuick(records, stats, question, (text) => {
         if (text === "AUTH_REQUIRED") {
           setIsKeyActive(false);
-          setQuickAiText("DIAGNOSTIC ENGINE OFFLINE. Check Worker Secrets.");
+          setQuickAiText("DIAGNOSTIC ENGINE OFFLINE. Injected key mismatch.");
         } else {
           setQuickAiText(text);
         }
@@ -317,20 +312,33 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {showDebug && (
-        <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-md flex items-center justify-center p-8">
-          <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-3xl p-8 text-slate-300 font-mono text-sm shadow-2xl overflow-hidden flex flex-col">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-white font-bold">Worker Diagnostics</h2>
-              <button onClick={() => setShowDebug(false)} className="text-slate-500 hover:text-white">✕ Close</button>
-            </div>
-            <div className="flex-1 overflow-y-auto bg-black/50 p-6 rounded-xl custom-scrollbar">
-              <pre>{JSON.stringify(debugInfo, null, 2)}</pre>
-            </div>
-            <div className="mt-6 text-xs text-slate-500 leading-relaxed">
-              * If 'has_API_KEY' is false, you must add the Secret 'API_KEY' in your Cloudflare Workers settings and REDEPLOY.
-            </div>
-          </div>
+      {showSystemDetails && systemInfo && (
+        <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-md flex items-center justify-center p-8 animate-in fade-in duration-300">
+           <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-[3rem] p-12 text-slate-300 shadow-2xl overflow-hidden flex flex-col">
+              <div className="flex justify-between items-center mb-8">
+                 <h2 className="text-2xl font-black text-white tracking-tighter uppercase">System Integrity Hub</h2>
+                 <button onClick={() => setShowSystemDetails(false)} className="text-slate-500 hover:text-white text-2xl">✕</button>
+              </div>
+              <div className="space-y-8 flex-1 overflow-y-auto custom-scrollbar pr-4">
+                 <div className="bg-black/40 p-8 rounded-3xl border border-slate-800">
+                    <h3 className="text-indigo-400 font-black text-[10px] uppercase tracking-widest mb-4">Client Environment (Browser)</h3>
+                    <div className="font-mono text-xs break-all space-y-2">
+                       <p><span className="text-slate-500">process.env.API_KEY:</span> <span className={systemInfo.browserKey.length > 20 ? 'text-emerald-400' : 'text-red-400'}>{systemInfo.browserKey.length > 10 ? `${systemInfo.browserKey.substring(0, 6)}...${systemInfo.browserKey.substring(systemInfo.browserKey.length - 4)}` : systemInfo.browserKey}</span></p>
+                       <p><span className="text-slate-500">Length:</span> {systemInfo.browserKey.length}</p>
+                    </div>
+                 </div>
+                 <div className="bg-black/40 p-8 rounded-3xl border border-slate-800">
+                    <h3 className="text-indigo-400 font-black text-[10px] uppercase tracking-widest mb-4">Worker Environment (Cloudflare)</h3>
+                    <div className="font-mono text-xs break-all">
+                       <pre>{JSON.stringify(systemInfo.workerData, null, 2)}</pre>
+                    </div>
+                 </div>
+              </div>
+              <div className="mt-8 pt-8 border-t border-slate-800 flex justify-between items-center">
+                 <p className="text-[10px] text-slate-500 font-bold max-w-xs uppercase leading-relaxed">If the Browser Key shows '%%API_KEY_INJECTION%%', the Worker injection is being bypassed by a cache.</p>
+                 <button onClick={() => window.location.reload()} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl hover:bg-indigo-700 transition-all">Force Refresh</button>
+              </div>
+           </div>
         </div>
       )}
 
@@ -342,14 +350,14 @@ const App: React.FC = () => {
           </h1>
           <div className="mt-8 space-y-2">
             {!isKeyActive ? (
-              <button onClick={runDiagnostics} className="w-full px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest text-left">
+              <button onClick={openIntegrityCheck} className="w-full px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest text-left">
                 <div className="flex items-center gap-2 mb-1"><Icons.Alert /> ENGINE OFFLINE</div>
-                <div className="text-[7px] leading-tight opacity-70">Click for System Diagnosis</div>
+                <div className="text-[7px] leading-tight opacity-70">Check Integrity Details</div>
               </button>
             ) : (
-              <div className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
+              <button onClick={openIntegrityCheck} className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Diagnostic Engine Active
-              </div>
+              </button>
             )}
             <button onClick={purgeLedger} className="w-full flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-red-900/40 border border-slate-700 rounded-xl text-slate-400 hover:text-red-200 text-[9px] font-black uppercase tracking-widest transition-all">Flush Ledger</button>
           </div>
@@ -359,9 +367,6 @@ const App: React.FC = () => {
           <button onClick={() => setView('dashboard')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${view === 'dashboard' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20' : 'hover:bg-slate-800/50 disabled:opacity-20'}`}><Icons.Dashboard /> Performance</button>
           <button onClick={() => setView('ai-insights')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${view === 'ai-insights' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20' : 'hover:bg-slate-800/50 disabled:opacity-20'}`}><Icons.AI /> AI Diagnosis</button>
         </nav>
-        <div className="p-4 border-t border-slate-800">
-          <button onClick={runDiagnostics} className="text-[8px] uppercase tracking-widest font-black text-slate-600 hover:text-indigo-400 transition-colors">Developer Diagnostics</button>
-        </div>
       </aside>
 
       <main className="flex-1 overflow-y-auto bg-[#F8FAFC] custom-scrollbar">
@@ -460,7 +465,7 @@ const App: React.FC = () => {
                          <div className="prose prose-indigo max-w-none font-medium text-slate-700 whitespace-pre-wrap leading-relaxed animate-in fade-in slide-in-from-bottom-6">
                            {quickAiText}
                          </div>
-                       ) : <div className="h-full flex flex-col items-center justify-center text-slate-300 opacity-40 uppercase font-black">Audit Awaiting Query</div>}
+                       ) : <div className="h-full flex flex-col items-center justify-center text-slate-300 opacity-40 uppercase font-black text-center px-12 leading-relaxed">Select a forensic logic scope or start a full audit.</div>}
                     </div>
                     <div className="p-16 bg-slate-50/50 border-t border-slate-200">
                       <div className="relative group max-w-4xl mx-auto">

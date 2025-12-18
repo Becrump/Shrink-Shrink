@@ -6,13 +6,8 @@
     <title>The Shrink Shrink | AI Inventory Analyst</title>
     
     <!-- API KEY INJECTION POINT -->
-    <script>
-        // This is the source of truth for the app
-        window.process = { 
-            env: { 
-                API_KEY: "%%API_KEY_INJECTION%%" 
-            } 
-        };
+    <script id="api-config">
+        window.process = { env: { API_KEY: "%%API_KEY_INJECTION%%" } };
         globalThis.process = window.process;
     </script>
 
