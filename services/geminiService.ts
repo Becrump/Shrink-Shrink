@@ -2,6 +2,9 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ShrinkRecord } from "../types";
 
+// Hardcoded API key as requested to ensure forensic connection stability
+const API_KEY = "AIzaSyCOGUsCIUXO0uiQqIPXnn53_Fe2SUKBT48";
+
 const isColdFoodManual = (name: string, code: string) => {
   const coldPrefixRegex = /^(KF|F\s|B\s)/i;
   return coldPrefixRegex.test(code) || coldPrefixRegex.test(name);
@@ -50,7 +53,7 @@ export const queryMarketAIQuick = async (
   onChunk: (text: string) => void
 ) => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const { marketNames, outliers } = getAggregates(records);
 
     const prompt = `
@@ -93,7 +96,7 @@ export const queryMarketAIDeep = async (
   summaryStats: any
 ): Promise<string> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const { outliers } = getAggregates(records);
 
     const prompt = `
@@ -118,7 +121,8 @@ export const queryMarketAIDeep = async (
       model: "gemini-3-pro-preview",
       contents: prompt,
       config: {
-        thinkingConfig: { thinkingBudget: 4000 }
+        thinkingConfig: { thinkingBudget: 4000 },
+        maxOutputTokens: 8000
       }
     });
     return response.text || "Diagnostic report generation failed.";
@@ -129,7 +133,7 @@ export const queryMarketAIDeep = async (
 
 export const parseRawReportText = async (rawText: string): Promise<{ records: Partial<ShrinkRecord>[], detectedPeriod: string, detectedMarket: string }> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const prompt = `Extract inventory data from this text. Focus on identifying the human-readable Market Name, the Reporting Period, and the itemized variances. Return valid JSON.\n\nTEXT:\n${rawText.slice(0, 15000)}`;
 
     const response = await ai.models.generateContent({
