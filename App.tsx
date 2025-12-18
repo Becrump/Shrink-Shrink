@@ -1,10 +1,20 @@
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { ShrinkRecord, ViewType } from './types';
+import { ShrinkRecord, ViewType, DeepDiveStatus } from './types';
 import { Icons } from './constants';
 import { AnalysisCharts } from './components/AnalysisCharts';
-import { queryMarketAI, parseRawReportText } from './services/geminiService';
+import { queryMarketAIQuick, queryMarketAIDeep } from './services/geminiService';
 import * as XLSX from 'xlsx';
+
+declare global {
+  interface AIStudio {
+    hasSelectedApiKey: () => Promise<boolean>;
+    openSelectKey: () => Promise<void>;
+  }
+  interface Window {
+    aistudio?: AIStudio;
+  }
+}
 
 type SegmentFilter = 'ALL' | 'SODA_SNACK' | 'COLD';
 
@@ -12,6 +22,7 @@ interface ImportStaging {
   records: Partial<ShrinkRecord>[];
   marketNames: string[];
   period: string;
+  detectedColumns: string[];
 }
 
 const MONTHS = [
@@ -20,38 +31,46 @@ const MONTHS = [
 ];
 
 const SUGGESTED_QUESTIONS = [
-  "What are the main opportunities to improve accuracy?",
-  "Analyze high-value items vs small-ticket shrink trends.",
-  "Project the potential savings over 3 months if we fix these leaks.",
-  "Isolate the cold food anomalies: Spoils or Theft?"
+  "Find naming confusion errors (e.g. Cheeseburger vs Classic Cheeseburger).",
+  "Are Cold Food (KF/F/B) overages due to missing tablet 'Adds'?",
+  "Analyze items with inverted variances in the same market.",
+  "Contrast Scanned Food (KF) accuracy vs Manual Snack counting.",
+  "Which market has the highest risk of tablet receiving errors?"
 ];
 
 const STORAGE_KEYS = {
-  RECORDS: 'shrink_guard_records_v2',
-  MONTHS: 'shrink_guard_months_v2',
-  MARKET: 'shrink_guard_market_v2',
-  SEGMENT: 'shrink_guard_segment_v2'
+  RECORDS: 'shrink_guard_records_v22',
+  MONTHS: 'shrink_guard_months_v22',
+  MARKET: 'shrink_guard_market_v22',
+  SEGMENT: 'shrink_guard_segment_v22'
+};
+
+const humanizeMarketName = (name: string): string => {
+  if (!name) return '';
+  let cleaned = name.replace(/^(Market|Location|Name|Site|Loc|Mkt|Point of Sale|POS|Site Name):\s*/i, '');
+  const segments = cleaned.split(/\s*[-|:/]\s+/);
+  const meaningfulSegments = segments.filter(seg => {
+    const s = seg.trim();
+    if (!s) return false;
+    if (segments.length === 1) return true;
+    if (/^\d+$/.test(s)) return false;
+    if (/^[A-Z0-9]{2,4}$/.test(s)) return false;
+    return true;
+  });
+  if (meaningfulSegments.length > 0) return meaningfulSegments.join(' - ').trim();
+  return cleaned.trim() || name;
 };
 
 const normalizePeriod = (str: string): string => {
   if (!str) return 'Unknown';
   const normalized = str.trim().toLowerCase();
-  for (const m of MONTHS) {
-    if (normalized.includes(m.toLowerCase())) return m;
-  }
-  const abbrevs: Record<string, string> = {
-    'jan': 'January', 'feb': 'February', 'mar': 'March', 'apr': 'April',
-    'may': 'May', 'jun': 'June', 'jul': 'July', 'aug': 'August',
-    'sep': 'September', 'oct': 'October', 'nov': 'November', 'dec': 'December'
-  };
-  for (const [key, val] of Object.entries(abbrevs)) {
-    if (normalized.startsWith(key)) return val;
-  }
+  for (const m of MONTHS) if (normalized.includes(m.toLowerCase())) return m;
   return str;
 };
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
+  const [hasApiKey, setHasApiKey] = useState<boolean>(true);
   
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
@@ -64,29 +83,22 @@ const App: React.FC = () => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.MONTHS);
       const parsed = saved ? JSON.parse(saved) : [];
-      return new Set(Array.isArray(parsed) ? parsed : []);
+      return new Set(parsed);
     } catch (e) { return new Set(); }
   });
 
-  const [selectedMarketFilter, setSelectedMarketFilter] = useState(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEYS.MARKET) || 'All';
-    } catch (e) { return 'All'; }
-  });
+  const [selectedMarketFilter, setSelectedMarketFilter] = useState(() => localStorage.getItem(STORAGE_KEYS.MARKET) || 'All');
+  const [activeSegment, setActiveSegment] = useState<SegmentFilter>(() => (localStorage.getItem(STORAGE_KEYS.SEGMENT) as SegmentFilter) || 'ALL');
 
-  const [activeSegment, setActiveSegment] = useState<SegmentFilter>(() => {
-    try {
-      return (localStorage.getItem(STORAGE_KEYS.SEGMENT) as SegmentFilter) || 'ALL';
-    } catch (e) { return 'ALL'; }
-  });
-
-  const [aiAnalysis, setAiAnalysis] = useState<string>('');
+  const [quickAiText, setQuickAiText] = useState<string>('');
   const [aiUserPrompt, setAiUserPrompt] = useState<string>('');
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isQuickAnalyzing, setIsQuickAnalyzing] = useState(false);
+  const [activeChip, setActiveChip] = useState<string | null>(null);
+  const [deepDiveStatus, setDeepDiveStatus] = useState<DeepDiveStatus>('idle');
+  const [deepDiveResult, setDeepDiveResult] = useState<string>('');
+
   const [isProcessing, setIsProcessing] = useState(false);
-  const [showPasteModal, setShowPasteModal] = useState(false);
-  const [pasteValue, setPasteValue] = useState('');
-  const [isPasting, setIsPasting] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState('');
   const [importStaging, setImportStaging] = useState<ImportStaging | null>(null);
   const [activeUploadMonth, setActiveUploadMonth] = useState<string | null>(null);
   
@@ -94,8 +106,41 @@ const App: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [aiAnalysis]);
+    try {
+      localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
+      localStorage.setItem(STORAGE_KEYS.MONTHS, JSON.stringify(Array.from(selectedMonths)));
+      localStorage.setItem(STORAGE_KEYS.MARKET, selectedMarketFilter);
+      localStorage.setItem(STORAGE_KEYS.SEGMENT, activeSegment);
+    } catch (e) {
+      console.warn("Storage quota limit reached.");
+    }
+  }, [records, selectedMonths, selectedMarketFilter, activeSegment]);
+
+  useEffect(() => {
+    const checkKey = async () => {
+      if (window.aistudio) {
+        const selected = await window.aistudio.hasSelectedApiKey();
+        setHasApiKey(selected);
+      }
+    };
+    checkKey();
+  }, []);
+
+  const handleSelectKey = async () => {
+    if (window.aistudio) {
+      await window.aistudio.openSelectKey();
+      setHasApiKey(true);
+    }
+  };
+
+  const purgeLedger = () => {
+    if (window.confirm("Purge historical forensic data?")) {
+      setRecords([]);
+      setSelectedMonths(new Set());
+      localStorage.clear();
+      setView('report-upload');
+    }
+  };
 
   const populatedMonths = useMemo(() => {
     const set = new Set<string>();
@@ -106,49 +151,33 @@ const App: React.FC = () => {
     return set;
   }, [records]);
 
-  const marketList = useMemo(() => {
-    const set = new Set<string>();
-    records.forEach(r => {
-      if (r.marketName) set.add(r.marketName);
-    });
-    return Array.from(set).sort();
+  const marketOptions = useMemo(() => {
+    const names = Array.from(new Set(records.map(r => r.marketName))).filter(Boolean).sort();
+    return ['All', ...names];
   }, [records]);
 
   const isColdFood = useCallback((record: ShrinkRecord) => {
-    const coldRegex = /^(KF|F|B|MG)(\s+|-|$)/i;
-    return coldRegex.test(record.itemNumber) || coldRegex.test(record.itemName);
+    const coldPrefixRegex = /^(KF|F\s|B\s)/i;
+    return coldPrefixRegex.test(record.itemNumber) || coldPrefixRegex.test(record.itemName);
   }, []);
 
   const timelineStats = useMemo(() => {
-    const stats: Record<string, { shrinkRate: number; overage: number; revenue: number; shrink: number; trend: number | null }> = {};
+    const stats: Record<string, { shrink: number; overage: number }> = {};
     records.forEach(r => {
       const norm = normalizePeriod(r.period);
       if (!MONTHS.includes(norm)) return;
-      if (selectedMarketFilter !== 'All' && r.marketName !== selectedMarketFilter) return;
-      if (activeSegment === 'COLD' && !isColdFood(r)) return;
-      if (activeSegment === 'SODA_SNACK' && isColdFood(r)) return;
-
-      if (!stats[norm]) stats[norm] = { shrinkRate: 0, overage: 0, revenue: 0, shrink: 0, trend: null };
-      stats[norm].revenue += r.totalRevenue || 0;
-      stats[norm].shrink += r.shrinkLoss || 0;
-      if (r.invVariance > 0) stats[norm].overage += (r.invVariance * r.unitCost);
-    });
-
-    let lastRate: number | null = null;
-    MONTHS.forEach(m => {
-      if (stats[m]) {
-        stats[m].shrinkRate = stats[m].revenue > 0 ? (stats[m].shrink / stats[m].revenue) * 100 : 0;
-        if (lastRate !== null) stats[m].trend = stats[m].shrinkRate - lastRate;
-        lastRate = stats[m].shrinkRate;
-      }
+      if (!stats[norm]) stats[norm] = { shrink: 0, overage: 0 };
+      const impact = r.invVariance * (r.unitCost || 0);
+      if (impact < 0) stats[norm].shrink += Math.abs(impact);
+      else if (impact > 0) stats[norm].overage += impact;
     });
     return stats;
-  }, [records, selectedMarketFilter, activeSegment, isColdFood]);
+  }, [records]);
 
   const filteredRecords = useMemo(() => {
     return records.filter(r => {
       const normPeriod = normalizePeriod(r.period);
-      if (!selectedMonths.has(normPeriod)) return false;
+      if (selectedMonths.size > 0 && !selectedMonths.has(normPeriod)) return false;
       if (selectedMarketFilter !== 'All' && r.marketName !== selectedMarketFilter) return false;
       if (activeSegment === 'COLD' && !isColdFood(r)) return false;
       if (activeSegment === 'SODA_SNACK' && isColdFood(r)) return false;
@@ -157,434 +186,466 @@ const App: React.FC = () => {
   }, [records, selectedMonths, selectedMarketFilter, activeSegment, isColdFood]);
 
   const stats = useMemo(() => {
-    if (filteredRecords.length === 0) return { totalShrink: 0, totalRevenue: 0, totalOverage: 0, accuracy: 100, highImpactItem: 'N/A' };
+    if (filteredRecords.length === 0) return { totalShrink: 0, totalRevenue: 0, totalOverage: 0, netVariance: 0, accuracy: 100, shrinkPct: 0, overagePct: 0, netPct: 0, count: 0 };
+    
     let totalShrink = 0, totalRevenue = 0, totalOverage = 0;
-    const itemLossMap: Record<string, number> = {};
+    
     filteredRecords.forEach(rec => {
-      totalShrink += rec.shrinkLoss || 0;
       totalRevenue += rec.totalRevenue || 0;
-      if (rec.invVariance > 0) totalOverage += (rec.invVariance * rec.unitCost);
-      const key = `${rec.itemNumber} - ${rec.itemName}`;
-      itemLossMap[key] = (itemLossMap[key] || 0) + rec.shrinkLoss;
+      const impact = rec.invVariance * (rec.unitCost || 0);
+      if (impact < 0) {
+        totalShrink += Math.abs(impact);
+      } else if (impact > 0) {
+        totalOverage += impact;
+      }
     });
-    const shrinkRate = totalRevenue !== 0 ? (totalShrink / totalRevenue) : 0;
-    const highImpact = Object.entries(itemLossMap).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
+
+    const netVariance = totalOverage - totalShrink;
+    const accuracy = totalRevenue > 0 ? (1 - (totalShrink / totalRevenue)) * 100 : 100;
+    const shrinkPct = totalRevenue > 0 ? (totalShrink / totalRevenue) * 100 : 0;
+    const overagePct = totalRevenue > 0 ? (totalOverage / totalRevenue) * 100 : 0;
+    const netPct = totalRevenue > 0 ? (netVariance / totalRevenue) * 100 : 0;
+
     return {
-      totalShrink, totalRevenue, totalOverage,
-      accuracy: Number((Math.max(0, 100 - (shrinkRate * 100))).toFixed(1)),
-      highImpactItem: highImpact !== 'N/A' ? (highImpact.split(' - ')[1] || highImpact) : 'N/A'
+      totalShrink, 
+      totalRevenue, 
+      totalOverage, 
+      netVariance,
+      accuracy: Number(Math.max(0, accuracy).toFixed(2)),
+      shrinkPct: Number(shrinkPct.toFixed(2)),
+      overagePct: Number(overagePct.toFixed(2)),
+      netPct: Number(netPct.toFixed(2)),
+      count: filteredRecords.length
     };
   }, [filteredRecords]);
 
-  const cleanNumeric = useCallback((val: any): number => {
-    if (typeof val === 'number') return isNaN(val) ? 0 : val;
-    if (!val || typeof val !== 'string') return 0;
-    const cleaned = val.replace(/[$,()]/g, '');
-    const num = parseFloat(cleaned);
-    const isNegative = val.includes('(') || val.includes('-');
-    return isNaN(num) ? 0 : num * (isNegative ? -1 : 1);
-  }, []);
+  const handleRunQuickAI = async (customPrompt?: string) => {
+    if (!hasApiKey) return handleSelectKey();
+    const question = customPrompt || aiUserPrompt;
+    if (!question.trim() || filteredRecords.length === 0 || isQuickAnalyzing) return;
+    
+    setIsQuickAnalyzing(true);
+    setActiveChip(customPrompt || 'custom');
+    setQuickAiText('');
+    setAiUserPrompt('');
+    setView('ai-insights');
+    
+    try {
+      await queryMarketAIQuick(filteredRecords, stats, question, (text) => setQuickAiText(text));
+    } finally {
+      setIsQuickAnalyzing(false);
+      setActiveChip(null);
+    }
+  };
 
-  const processRecordsBatch = useCallback((rows: any[], marketName: string, timestamp: number, period: string): ShrinkRecord[] => {
-    const coldRegex = /^(KF|F|B|MG)(\s+|-|$)/i;
-    const normPeriod = normalizePeriod(period);
-    return rows.map((row, i) => {
-      if (!row) return null;
-      let id, name, invVar, rev, sold, price, loss, cost, profit;
-      if (Array.isArray(row)) {
-        if (row.length < 2) return null;
-        [id, name, invVar, rev, sold, price, loss, cost, profit] = row;
-      } else {
-        id = row['Item#'] || row['Item Number'] || Object.values(row)[0];
-        name = row['Item Name'] || row['Description'] || Object.values(row)[1];
-        invVar = row['Inv Variance'] || row['Variance'] || row['Inv Var'];
-        rev = row['Total Revenue'] || row['Revenue'];
-        sold = row['Sold Qty'] || row['Quantity Sold'];
-        loss = row['Shrink Loss'] || row['Loss'];
-        cost = row['Unit Cost'];
+  const startDeepDive = async () => {
+    if (!hasApiKey) return handleSelectKey();
+    if (deepDiveStatus === 'ready') {
+      setQuickAiText(deepDiveResult);
+      setDeepDiveStatus('idle');
+      setView('ai-insights');
+      return;
+    }
+    if (deepDiveStatus === 'analyzing' || filteredRecords.length === 0) return;
+    setDeepDiveStatus('analyzing');
+    queryMarketAIDeep(filteredRecords, stats).then(result => {
+      if (result === "RESELECT_KEY") {
+        setHasApiKey(false);
+        setDeepDiveStatus('idle');
+        return;
       }
-      const itemIDStr = String(id || '').trim();
-      if (!itemIDStr || itemIDStr.toLowerCase().includes('total')) return null;
-      return {
-        id: `rec-${i}-${timestamp}-${Math.random().toString(36).substr(2, 5)}`,
-        itemNumber: itemIDStr,
-        itemName: String(name || 'Unnamed Item').trim(),
-        invVariance: cleanNumeric(invVar),
-        totalRevenue: cleanNumeric(rev),
-        soldQty: cleanNumeric(sold),
-        salePrice: cleanNumeric(price),
-        shrinkLoss: Math.abs(cleanNumeric(loss)),
-        unitCost: cleanNumeric(cost),
-        itemProfit: cleanNumeric(profit),
-        category: (coldRegex.test(itemIDStr) || coldRegex.test(String(name))) ? 'Cold Food' : 'General',
-        marketName: marketName || 'Default Market',
-        period: normPeriod
-      };
-    }).filter(r => r !== null) as ShrinkRecord[];
-  }, [cleanNumeric]);
-
-  const commitImport = () => {
-    if (!importStaging) return;
-    const { records: stagedRecords, period } = importStaging;
-    const normPeriod = normalizePeriod(period);
-    setRecords(prev => {
-      const filtered = prev.filter(r => normalizePeriod(r.period) !== normPeriod);
-      const newRecords = stagedRecords.map((item, i) => ({ ...item, id: `imp-${i}-${Date.now()}`, period: normPeriod } as ShrinkRecord));
-      return [...filtered, ...newRecords];
-    });
-    setSelectedMonths(prev => { const next = new Set(prev); next.add(normPeriod); return next; });
-    setImportStaging(null);
-    setView('dashboard');
+      setDeepDiveResult(result);
+      setDeepDiveStatus('ready');
+    }).catch(() => setDeepDiveStatus('idle'));
   };
 
   const handleFileUpload = (file: File, targetedMonth?: string) => {
     setIsProcessing(true);
+    setProcessingStatus('Forensic Sync Initiated...');
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-        let allExtractedRecords: Partial<ShrinkRecord>[] = [];
-        let detectedMarkets = new Set<string>();
-        let finalPeriod = targetedMonth || '';
-        workbook.SheetNames.forEach((sheetName) => {
+        const workbook = XLSX.read(data, { type: 'array' });
+        let allExtractedRecords: any[] = [];
+        let humanMarketNames: string[] = [];
+        let detectedColumnNames: string[] = [];
+        
+        workbook.SheetNames.forEach((sheetName, sIdx) => {
           try {
+            setProcessingStatus(`Auditing POS ${sIdx + 1}/${workbook.SheetNames.length}...`);
             const worksheet = workbook.Sheets[sheetName];
             const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-            if (!jsonData || jsonData.length < 1) return;
-            const row2 = jsonData[2] as any[];
-            const row3 = jsonData[3] as any[];
-            let sheetMarketName = ((row2?.[0] || '') + ' ' + (row3?.[0] || '')).trim().replace(/^market:?\s+/gi, '').trim() || sheetName;
-            detectedMarkets.add(sheetMarketName);
-            const dataStartIndex = jsonData.findIndex((row: any) => Array.isArray(row) && row.length >= 2 && (String(row[0]).toLowerCase().includes('item') || !isNaN(parseFloat(row[0]))));
-            if (dataStartIndex > -1) allExtractedRecords = [...allExtractedRecords, ...processRecordsBatch(jsonData.slice(dataStartIndex), sheetMarketName, Date.now(), finalPeriod || 'Current')];
-          } catch(err) {}
+            if (!jsonData || jsonData.length < 5) return;
+
+            const locationVal = (jsonData[2] as any[])?.[0] || '';
+            const marketVal = (jsonData[3] as any[])?.[0] || '';
+            const hLocation = humanizeMarketName(String(locationVal));
+            const hMarket = humanizeMarketName(String(marketVal));
+            let cleanName = (hLocation && hMarket && hLocation !== hMarket) ? `${hLocation} - ${hMarket}` : (hMarket || hLocation || humanizeMarketName(sheetName));
+            if (!humanMarketNames.includes(cleanName)) humanMarketNames.push(cleanName);
+
+            let colMap = { itemNum: 0, itemName: 1, variance: 2, revenue: 3, soldQty: 4, salePrice: 5, itemCost: 7 };
+            let headerRowIndex = -1;
+            
+            for (let i = 0; i < Math.min(jsonData.length, 50); i++) {
+              const row = jsonData[i] as any[];
+              if (!row || !Array.isArray(row)) continue;
+              const rowStr = row.join('|').toLowerCase();
+              if (rowStr.includes('variance') || rowStr.includes('revenue') || rowStr.includes('cost')) {
+                headerRowIndex = i;
+                row.forEach((cell, idx) => {
+                  const s = String(cell || '').toLowerCase().trim();
+                  if (!s) return;
+                  if (s === 'item code' || s === 'item number' || s === 'item no') colMap.itemNum = idx;
+                  else if (s === 'item' || s === 'item name' || s === 'description') colMap.itemName = idx;
+                  else if (s === 'inv variance' || s === 'inventory variance') colMap.variance = idx;
+                  else if (s === 'total revenue' || s === 'revenue' || s === 'sales') colMap.revenue = idx;
+                  else if (s === 'sold qty' || s === 'qty sold' || s === 'units sold') colMap.soldQty = idx;
+                  else if (s === 'sale price' || s === 'price') colMap.salePrice = idx;
+                  else if (s === 'item cost' || s === 'unit cost' || s === 'cost') colMap.itemCost = idx;
+                  else if (s.includes('variance') && !colMap.variance) colMap.variance = idx;
+                });
+                detectedColumnNames = row.map(c => String(c || ''));
+                break;
+              }
+            }
+            if (headerRowIndex === -1) return;
+
+            const dataRows = jsonData.filter((r: any, idx) => 
+              idx > headerRowIndex && Array.isArray(r) && r.length > 3 && (parseFloat(String(r[colMap.itemNum])) || parseFloat(String(r[colMap.variance])))
+            );
+            
+            dataRows.forEach((row: any) => {
+              const itemLabel = String(row[colMap.itemName] || '').toLowerCase();
+              if (itemLabel.includes('total') || itemLabel.includes('summary')) return;
+
+              const invVar = parseFloat(row[colMap.variance]) || 0;
+              if (Math.abs(invVar) < 0.001) return;
+
+              const cost = parseFloat(row[colMap.itemCost]) || 0;
+              const soldQty = parseFloat(row[colMap.soldQty]) || 0;
+              const salePrice = parseFloat(row[colMap.salePrice]) || 0;
+              
+              let revenue = parseFloat(row[colMap.revenue]) || 0;
+              if (revenue === 0 && soldQty > 0 && salePrice > 0) {
+                revenue = soldQty * salePrice;
+              }
+              
+              const impact = invVar * cost;
+              
+              allExtractedRecords.push({
+                itemNumber: String(row[colMap.itemNum] || ''),
+                itemName: String(row[colMap.itemName] || ''),
+                invVariance: invVar,
+                totalRevenue: revenue,
+                soldQty: soldQty,
+                salePrice: salePrice,
+                shrinkLoss: invVar < 0 ? Math.abs(impact) : 0,
+                unitCost: cost,
+                marketName: cleanName,
+                period: targetedMonth || 'Current'
+              });
+            });
+          } catch (sheetErr) { console.warn(`POS forensic error:`, sheetErr); }
         });
-        if (!finalPeriod) finalPeriod = normalizePeriod(new Date().toLocaleString('default', { month: 'long' }));
-        setImportStaging({ records: allExtractedRecords, marketNames: Array.from(detectedMarkets), period: finalPeriod });
+        
+        if (allExtractedRecords.length === 0) {
+          alert("Baseline matches perfectly. No forensic variances detected.");
+          setIsProcessing(false);
+          return;
+        }
+
+        setImportStaging({ records: allExtractedRecords, marketNames: humanMarketNames, period: targetedMonth || 'Current', detectedColumns: detectedColumnNames });
         setIsProcessing(false);
-      } catch (err) { alert("Format Error"); setIsProcessing(false); }
+      } catch (err) { setIsProcessing(false); }
     };
     reader.readAsArrayBuffer(file);
   };
 
-  const toggleMonthSelection = (month: string) => {
+  const commitImport = () => {
+    if (!importStaging) return;
+    const newRecords = importStaging.records.map((r, i) => ({ ...r, id: `imp-${i}-${Date.now()}` } as ShrinkRecord));
+    setRecords(prev => [...prev.filter(r => normalizePeriod(r.period) !== importStaging.period), ...newRecords]);
+    setSelectedMonths(prev => new Set(prev).add(normalizePeriod(importStaging.period)));
+    setImportStaging(null);
+    setView('dashboard');
+  };
+
+  const toggleMonth = (m: string) => {
     setSelectedMonths(prev => {
-      const next = new Set(prev);
-      if (next.has(month)) next.delete(month);
-      else next.add(month);
-      return next;
+      const n = new Set(prev);
+      if (n.has(m)) n.delete(m);
+      else n.add(m);
+      return n;
     });
-  };
-
-  const handleRunAI = async (customPrompt?: string) => {
-    const question = customPrompt || aiUserPrompt;
-    if (!question.trim() || filteredRecords.length === 0 || isAnalyzing) return;
-    
-    setIsAnalyzing(true);
-    setAiAnalysis('');
-    setAiUserPrompt('');
-    setView('ai-insights');
-    
-    await queryMarketAI(filteredRecords, { 
-      totalRevenue: stats.totalRevenue,
-      totalShrink: stats.totalShrink,
-      accuracy: stats.accuracy,
-      overageTotal: stats.totalOverage, 
-      activeContext: activeSegment === 'SODA_SNACK' ? 'Soda & Snack' : activeSegment 
-    }, question, (text) => setAiAnalysis(text));
-    
-    setIsAnalyzing(false);
-  };
-
-  const removeMonthData = (month: string) => {
-    if (confirm(`Remove all data for ${month}?`)) {
-      setRecords(prev => prev.filter(r => normalizePeriod(r.period) !== month));
-      setSelectedMonths(prev => { const next = new Set(prev); next.delete(month); return next; });
-    }
   };
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans text-slate-900">
-      <aside className="w-64 bg-slate-900 text-slate-300 border-r border-slate-800 flex flex-col shrink-0 z-20">
-        <div className="p-6">
-          <h1 className="text-xl font-bold text-white flex items-center gap-2">
-            <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center text-white font-black">S</div>
+      {isProcessing && (
+        <div className="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-xl flex items-center justify-center animate-in fade-in duration-300">
+           <div className="bg-white p-12 rounded-[4rem] shadow-2xl flex flex-col items-center gap-8 border border-slate-200 max-w-sm w-full text-center">
+              <div className="relative">
+                <div className="w-24 h-24 border-4 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin" />
+                <div className="absolute inset-0 flex items-center justify-center text-indigo-600 drop-shadow-sm"><Icons.AI /></div>
+              </div>
+              <div>
+                 <h3 className="text-2xl font-black text-slate-900 uppercase tracking-tighter">Forensic Sync</h3>
+                 <p className="text-slate-500 font-bold text-[10px] uppercase tracking-widest mt-2">{processingStatus}</p>
+                 <p className="text-slate-400 text-[9px] mt-4 max-w-[25ch] mx-auto uppercase leading-relaxed font-bold">Scanning: KF/F/B UPC Accuracy vs Manual Planogram counts...</p>
+              </div>
+           </div>
+        </div>
+      )}
+
+      <aside className="w-64 bg-slate-900 text-slate-300 border-r border-slate-800 flex flex-col shrink-0 z-20 shadow-2xl">
+        <div className="p-8">
+          <h1 className="text-xl font-bold text-white flex items-center gap-3">
+            <div className="w-10 h-10 bg-indigo-500 rounded-xl flex items-center justify-center text-white font-black shadow-lg">S</div>
             The Shrink Shrink
           </h1>
-          <div className="mt-4 flex items-center gap-2 px-2 py-1 bg-white/5 rounded-lg">
-             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Records: {records.length}</span>
+          <div className="mt-8 space-y-2">
+            {!hasApiKey ? (
+              <button onClick={handleSelectKey} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">Connect AI Hub</button>
+            ) : (
+              <div className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Diagnostic Engine Active
+              </div>
+            )}
+            <button onClick={purgeLedger} className="w-full flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-red-900/40 border border-slate-700 rounded-xl text-slate-400 hover:text-red-200 text-[9px] font-black uppercase tracking-widest transition-all">Flush Ledger</button>
           </div>
         </div>
-        <nav className="flex-1 px-4 space-y-1">
-          <button onClick={() => setView('report-upload')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${view === 'report-upload' ? 'bg-slate-800 text-white shadow-lg' : 'hover:bg-slate-800'}`}><Icons.Upload /> Import</button>
-          <button onClick={() => setView('dashboard')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${view === 'dashboard' ? 'bg-slate-800 text-white shadow-lg' : 'hover:bg-slate-800 disabled:opacity-30'}`}><Icons.Dashboard /> Analytics</button>
-          <button onClick={() => setView('ai-insights')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${view === 'ai-insights' ? 'bg-slate-800 text-white shadow-lg' : 'hover:bg-slate-800 disabled:opacity-30'}`}><Icons.AI /> AI Doctor</button>
+        <nav className="flex-1 px-4 space-y-1.5">
+          <button onClick={() => setView('report-upload')} className={`w-full flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${view === 'report-upload' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20' : 'hover:bg-slate-800/50'}`}><Icons.Upload /> Drop Data</button>
+          <button onClick={() => setView('dashboard')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${view === 'dashboard' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20' : 'hover:bg-slate-800/50 disabled:opacity-20'}`}><Icons.Dashboard /> Performance</button>
+          <button onClick={() => setView('ai-insights')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${view === 'ai-insights' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20' : 'hover:bg-slate-800/50 disabled:opacity-20'}`}><Icons.AI /> AI Diagnosis</button>
         </nav>
-        <div className="p-4 border-t border-slate-800">
-          <p className="text-[9px] font-black text-slate-500 uppercase text-center tracking-widest leading-relaxed">Forensic Audit Tooling<br/>Powered by Gemini Flash</p>
+        <div className="p-8 border-t border-slate-800">
+           <div className="bg-slate-800/40 p-4 rounded-2xl border border-slate-700/50">
+              <p className="text-[9px] font-black text-slate-500 uppercase mb-1 tracking-widest">Active Variances</p>
+              <p className="text-base font-black text-white">{records.length.toLocaleString()}</p>
+           </div>
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto bg-[#F8FAFC]">
+      <main className="flex-1 overflow-y-auto bg-[#F8FAFC] custom-scrollbar">
         {importStaging && (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-md">
-            <div className="bg-white w-full max-w-xl rounded-[3rem] shadow-2xl border border-slate-200 animate-in zoom-in-95 duration-300">
-               <div className="p-10 border-b border-slate-100 bg-slate-50/50">
-                 <h3 className="text-2xl font-black text-slate-900">Confirm Workbook Import</h3>
-                 <p className="text-slate-500 text-sm font-medium">Data will be stored under <b>{importStaging.period}</b>.</p>
-               </div>
-               <div className="p-10 space-y-8">
-                  <select value={importStaging.period} onChange={(e) => setImportStaging({...importStaging, period: e.target.value})} className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 font-bold outline-none focus:border-indigo-500 transition-all">
-                    {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                  <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 max-h-40 overflow-y-auto">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Detected Markets ({importStaging.marketNames.length})</p>
-                    <div className="flex flex-wrap gap-2">{importStaging.marketNames.map(name => <span key={name} className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded-xl text-[10px] font-black border border-indigo-100">{name}</span>)}</div>
-                  </div>
-                  <div className="flex gap-4">
-                     <button onClick={() => setImportStaging(null)} className="flex-1 py-5 rounded-2xl font-black text-slate-500 hover:bg-slate-100 uppercase tracking-widest text-xs">Cancel</button>
-                     <button onClick={commitImport} className="flex-[2] bg-indigo-600 text-white py-5 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-indigo-700 shadow-xl transition-all">Confirm Import</button>
-                  </div>
-               </div>
-            </div>
-          </div>
-        )}
-
-        {showPasteModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-md">
-            <div className="bg-white w-full max-w-3xl rounded-[3rem] shadow-2xl overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-300">
-              <div className="p-10 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                <h3 className="text-2xl font-black text-slate-900 tracking-tight">AI Smart Paste</h3>
-                <button onClick={() => setShowPasteModal(false)} className="w-10 h-10 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-400">✕</button>
-              </div>
-              <div className="p-10">
-                <textarea value={pasteValue} onChange={(e) => setPasteValue(e.target.value)} placeholder="Paste report text..." className="w-full h-64 bg-slate-50 border-2 border-slate-100 rounded-3xl p-6 text-sm font-medium focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all resize-none shadow-inner" />
-                <div className="mt-8">
-                  <button onClick={async () => {
-                    setIsPasting(true);
-                    const result = await parseRawReportText(pasteValue);
-                    if (result.records.length > 0) setImportStaging({ records: result.records, marketNames: [result.detectedMarket || 'Imported Market'], period: normalizePeriod(result.detectedPeriod || new Date().toLocaleString('default', { month: 'long' })) });
-                    setShowPasteModal(false); setPasteValue(''); setIsPasting(false);
-                  }} disabled={isPasting || !pasteValue} className="w-full bg-indigo-600 text-white py-5 rounded-[2rem] font-black text-sm uppercase tracking-widest hover:bg-indigo-700 disabled:opacity-50 transition-all flex items-center justify-center gap-3">
-                    {isPasting ? "Processing..." : "Import Text"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="p-10">
-          <div className="mb-10">
-            <div className="flex items-center justify-between mb-6 px-4">
-              <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Audit Timeline & Comparison</h3>
-              <div className="flex gap-4">
-                <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full uppercase tracking-widest">{selectedMonths.size} Active Periods</span>
-              </div>
-            </div>
-            
-            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-12 gap-3">
-              {MONTHS.map((month) => {
-                const stats = timelineStats[month];
-                const isPopulated = populatedMonths.has(month);
-                const isSelected = selectedMonths.has(month);
-                const trend = stats?.trend;
-                const trendColor = trend !== null ? (trend < 0 ? 'text-emerald-500' : trend > 0 ? 'text-red-500' : 'text-slate-400') : 'text-slate-400';
-
-                return (
-                  <div 
-                    key={month} 
-                    onClick={() => isPopulated ? toggleMonthSelection(month) : (setActiveUploadMonth(month), fileInputRef.current?.click())} 
-                    className={`relative h-44 group flex flex-col items-center justify-start py-4 px-2 rounded-3xl transition-all cursor-pointer border-2 shadow-sm ${isPopulated ? isSelected ? 'bg-white border-emerald-500 shadow-emerald-200' : 'bg-white border-slate-100' : 'bg-white border-slate-200 border-dashed hover:border-indigo-400 hover:bg-indigo-50/30'}`}
-                  >
-                    <span className={`text-[10px] font-black uppercase mb-3 ${isSelected ? 'text-emerald-600' : 'text-slate-400'}`}>{month.substring(0, 3)}</span>
-                    <div className="mb-4">
-                      {isPopulated ? (
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition-all ${isSelected ? 'bg-emerald-600 text-white scale-110 shadow-lg shadow-emerald-200' : 'bg-emerald-50 text-emerald-400 border border-emerald-100'}`}>{isSelected ? '✓' : '○'}</div>
-                      ) : (
-                        <div className="text-slate-300 group-hover:text-indigo-500 transition-colors"><Icons.Upload /></div>
-                      )}
-                    </div>
-                    {isPopulated && (
-                      <div className="w-full space-y-2 mt-auto border-t border-slate-50 pt-3">
-                        <div className="text-center">
-                          <p className="text-[8px] font-black text-slate-400 uppercase leading-none mb-0.5">Shrink</p>
-                          <p className={`text-xs font-black ${isSelected ? 'text-slate-900' : 'text-slate-500'}`}>{stats.shrinkRate.toFixed(1)}%</p>
-                        </div>
-                        {trend !== null && <div className={`text-[9px] font-black text-center ${trendColor}`}>{trend > 0 ? '+' : ''}{trend.toFixed(1)}%</div>}
-                        <div className="text-center">
-                          <p className="text-[8px] font-black text-slate-400 uppercase leading-none mb-0.5">Over</p>
-                          <p className="text-[10px] font-bold text-slate-500">${Math.round(stats.overage).toLocaleString()}</p>
-                        </div>
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/90 backdrop-blur-xl">
+            <div className="bg-white w-full max-w-xl rounded-[4rem] shadow-2xl p-12 border border-slate-200">
+               <h3 className="text-3xl font-black mb-6 tracking-tighter">Audit Required</h3>
+               <div className="bg-slate-50 p-8 rounded-[2.5rem] mb-8 border border-slate-100 max-h-64 overflow-y-auto custom-scrollbar">
+                  <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Market Forensic Sync:</p>
+                  <div className="flex flex-col gap-2.5">
+                    {importStaging.marketNames.map((name, idx) => (
+                      <div key={idx} className="bg-white border border-slate-200 px-5 py-4 rounded-2xl text-[11px] font-black text-indigo-700 shadow-sm flex items-center justify-between group hover:border-indigo-400 transition-all">
+                        <span className="truncate pr-4">{name}</span>
+                        <div className="w-6 h-6 bg-indigo-50 rounded-full flex items-center justify-center text-[10px] text-indigo-500">✓</div>
                       </div>
-                    )}
-                    {isPopulated && (
-                      <button onClick={(e) => { e.stopPropagation(); removeMonthData(month); }} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity shadow-lg z-10">✕</button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0], activeUploadMonth || undefined); setActiveUploadMonth(null); }} />
-          </div>
-
-          {!isProcessing && view === 'report-upload' ? (
-            <div className="max-w-4xl mx-auto py-20 text-center">
-              <h2 className="text-6xl font-black text-slate-900 mb-6 tracking-tighter">Inventory Audit Hub</h2>
-              <p className="text-slate-500 text-xl font-medium mb-12">Select a month above or drop a Cantaloupe Seed workbook here.</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                 <div onClick={() => fileInputRef.current?.click()} className="bg-white border-2 border-slate-100 p-12 rounded-[4rem] flex flex-col items-center gap-6 shadow-sm hover:border-indigo-400 cursor-pointer transition-all hover:-translate-y-1"><Icons.FileExcel /><p className="text-2xl font-black text-slate-900">Upload Excel</p></div>
-                 <div onClick={() => setShowPasteModal(true)} className="bg-white border-2 border-slate-100 p-12 rounded-[4rem] flex flex-col items-center gap-6 shadow-sm hover:border-indigo-400 cursor-pointer transition-all hover:-translate-y-1"><Icons.AI /><p className="text-2xl font-black text-slate-900">AI Paste Import</p></div>
-              </div>
-            </div>
-          ) : !isProcessing && (
-            <div className="animate-in fade-in duration-500">
-              <header className="mb-10 flex flex-col lg:flex-row justify-between lg:items-end gap-6">
-                <div>
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${activeSegment === 'COLD' ? 'bg-blue-100 text-blue-700' : activeSegment === 'SODA_SNACK' ? 'bg-orange-100 text-orange-700' : 'bg-slate-200 text-slate-700'}`}>
-                      {activeSegment === 'ALL' ? 'Full Portfolio' : activeSegment === 'COLD' ? 'Cold Food Section' : 'Soda & Snack Portfolio'}
-                    </span>
-                  </div>
-                  <h2 className="text-5xl font-black text-slate-900 tracking-tighter">{selectedMarketFilter === 'All' ? 'Consolidated' : selectedMarketFilter} Audit</h2>
-                </div>
-                <div className="flex flex-wrap items-center gap-4">
-                  <div className="bg-slate-200/50 p-2 rounded-2xl flex gap-1">
-                    {(['ALL', 'SODA_SNACK', 'COLD'] as SegmentFilter[]).map((type) => (
-                      <button key={type} onClick={() => setActiveSegment(type)} className={`px-6 py-3 rounded-xl text-[10px] font-black transition-all uppercase tracking-widest ${activeSegment === type ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>{type === 'SODA_SNACK' ? 'SODA & SNACK' : type}</button>
                     ))}
                   </div>
-                  <select value={selectedMarketFilter} onChange={(e) => setSelectedMarketFilter(e.target.value)} className="bg-white border border-slate-200 rounded-2xl px-8 py-4 text-xs font-black shadow-sm outline-none tracking-widest uppercase">
-                    <option value="All">All Markets</option>
-                    {marketList.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </div>
-              </header>
+               </div>
+               <p className="text-slate-500 mb-10 text-sm font-medium leading-relaxed">Identifying <span className="font-black text-indigo-600">{importStaging.records.length} forensic variances</span>. Separating UPC-Scanned (KF/F/B) from Manual counting.</p>
+               <div className="flex gap-4">
+                  <button onClick={() => setImportStaging(null)} className="flex-1 py-5 font-black text-slate-400 uppercase tracking-widest text-[10px] hover:text-red-500 transition-colors">Discard</button>
+                  <button onClick={commitImport} className="flex-[2] bg-indigo-600 text-white py-5 rounded-3xl font-black shadow-2xl shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all uppercase tracking-widest text-xs">Commit To History</button>
+               </div>
+            </div>
+          </div>
+        )}
 
-              {filteredRecords.length > 0 && view === 'dashboard' && (
-                <>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
-                    <div className="bg-white p-8 rounded-[3rem] shadow-sm border border-slate-200">
-                      <p className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-4">Inventory Shrink</p>
-                      <p className="text-4xl font-black tracking-tighter">${stats.totalShrink.toLocaleString()}</p>
-                      <p className="text-[10px] font-bold text-slate-400 mt-2 uppercase">Financial Liability</p>
+        <div className="p-12 max-w-7xl mx-auto">
+          <div className="mb-14 flex gap-5 overflow-x-auto pb-8 custom-scrollbar scroll-smooth">
+            {MONTHS.map(m => {
+              const isPopulated = populatedMonths.has(m);
+              const isSelected = selectedMonths.has(m);
+              const mStats = timelineStats[m];
+              return (
+                <div key={m} onClick={() => isPopulated ? toggleMonth(m) : (setActiveUploadMonth(m), fileInputRef.current?.click())} 
+                     className={`flex-shrink-0 w-44 h-60 rounded-[3rem] border-2 flex flex-col items-center justify-between p-6 cursor-pointer transition-all duration-300 group ${isSelected ? 'bg-white border-indigo-500 shadow-2xl scale-105 z-10' : isPopulated ? 'bg-white border-slate-100 hover:border-indigo-200 shadow-xl' : 'bg-slate-100 border-dashed border-slate-300 opacity-60 hover:opacity-100'}`}>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 group-hover:text-indigo-500 transition-colors">{m}</span>
+                  {isPopulated ? (
+                    <>
+                      <div className={`w-12 h-12 rounded-[1.25rem] flex items-center justify-center transition-all ${isSelected ? 'bg-indigo-600 text-white shadow-xl rotate-6' : 'bg-slate-100 text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-500'}`}><Icons.Markets /></div>
+                      <div className="w-full space-y-2 pt-2 border-t border-slate-50">
+                        <div className="flex justify-between items-center text-[9px] font-black">
+                          <span className="text-slate-400 uppercase tracking-tighter">Loss</span>
+                          <span className="text-red-500">-${Math.round(mStats?.shrink || 0).toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between items-center text-[9px] font-black">
+                          <span className="text-slate-400 uppercase tracking-tighter">Gain</span>
+                          <span className="text-emerald-500">+${Math.round(mStats?.overage || 0).toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center text-slate-400 gap-4 opacity-40 group-hover:opacity-100 transition-all">
+                      <div className="w-12 h-12 bg-slate-200 rounded-full flex items-center justify-center group-hover:bg-indigo-100 group-hover:text-indigo-500 transition-all"><Icons.Upload /></div>
+                      <span className="text-[8px] font-black uppercase tracking-widest">New Slot</span>
                     </div>
-                    <div className="bg-white p-8 rounded-[3rem] shadow-sm border border-slate-200">
-                      <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-4">Audit Overage</p>
-                      <p className="text-4xl font-black tracking-tighter">${stats.totalOverage.toLocaleString()}</p>
-                      <p className="text-[10px] font-bold text-slate-400 mt-2 uppercase">Likely Receiving Error</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0], activeUploadMonth || undefined)} />
+
+          {view === 'dashboard' && records.length > 0 && (
+            <div className="animate-in fade-in slide-in-from-bottom-5 duration-700">
+              <div className="flex flex-wrap items-center justify-between gap-8 mb-12 bg-white p-8 rounded-[3rem] border border-slate-200 shadow-sm">
+                 <div className="flex items-center gap-8">
+                    <div className="flex bg-slate-50 p-2 rounded-[1.5rem] border border-slate-100 shadow-inner">
+                       {(['ALL', 'SODA_SNACK', 'COLD'] as SegmentFilter[]).map(seg => (
+                         <button key={seg} onClick={() => setActiveSegment(seg)} className={`px-8 py-3.5 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeSegment === seg ? 'bg-white text-indigo-600 shadow-xl border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}>
+                           {seg === 'ALL' ? 'Everything' : seg === 'SODA_SNACK' ? 'Snacks & Drinks' : 'Fresh Food'}
+                         </button>
+                       ))}
                     </div>
-                    <div className="bg-white p-8 rounded-[3rem] shadow-sm border border-slate-200">
-                      <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest mb-4">Accuracy Score</p>
-                      <p className="text-4xl font-black tracking-tighter">{stats.accuracy}%</p>
-                      <div className="mt-2 bg-slate-100 h-1.5 rounded-full overflow-hidden"><div className="bg-orange-400 h-full transition-all" style={{width: `${stats.accuracy}%`}} /></div>
+                    <div className="h-10 w-px bg-slate-200 hidden md:block" />
+                    <select value={selectedMarketFilter} onChange={(e) => setSelectedMarketFilter(e.target.value)} className="bg-slate-50 border border-slate-100 rounded-2xl px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-600 outline-none focus:ring-4 focus:ring-indigo-500/10 min-w-[340px] shadow-sm appearance-none cursor-pointer">
+                       <option value="All">All Filtered Locations</option>
+                       {marketOptions.filter(m => m !== 'All').map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    </select>
+                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mb-16">
+                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
+                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Shrink (Cost)</p>
+                    <p className="text-5xl font-black text-red-500 tracking-tighter">-${stats.totalShrink.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+                    <div className="mt-5 flex items-center justify-between border-t border-slate-50 pt-3">
+                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Loss Impact</span>
+                       <span className="text-[12px] font-black text-slate-900">{stats.shrinkPct}%</span>
                     </div>
-                    <div className="bg-white p-8 rounded-[3rem] shadow-sm border border-slate-200">
-                      <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-4">Highest Impact</p>
-                      <p className="text-lg font-black leading-tight line-clamp-2">{stats.highImpactItem}</p>
+                 </div>
+                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
+                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Overage (Cost)</p>
+                    <p className="text-5xl font-black text-emerald-600 tracking-tighter">+${stats.totalOverage.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+                    <div className="mt-5 flex items-center justify-between border-t border-slate-50 pt-3">
+                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Gain Impact</span>
+                       <span className="text-[12px] font-black text-slate-900">{stats.overagePct}%</span>
+                    </div>
+                 </div>
+                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
+                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Net Outcome</p>
+                    <p className={`text-5xl font-black tracking-tighter ${stats.netVariance >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                       {stats.netVariance >= 0 ? '+' : ''}${Math.round(stats.netVariance).toLocaleString()}
+                    </p>
+                    <div className="mt-5 flex items-center justify-between border-t border-slate-50 pt-3">
+                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Bottom Line Shift</span>
+                       <span className="text-[12px] font-black text-slate-900">{stats.netPct}%</span>
+                    </div>
+                 </div>
+                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
+                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Forensic Integrity</p>
+                    <p className="text-5xl font-black text-slate-900 tracking-tighter">{stats.accuracy}%</p>
+                    <div className="mt-5 flex items-center justify-between border-t border-slate-50 pt-3">
+                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Audit Stability</span>
+                       <div className={`w-3 h-3 rounded-full ${stats.accuracy > 98 ? 'bg-emerald-500 shadow-lg shadow-emerald-200' : 'bg-orange-500 shadow-lg shadow-orange-200'}`} />
+                    </div>
+                 </div>
+              </div>
+              <AnalysisCharts data={filteredRecords} />
+            </div>
+          )}
+
+          {view === 'ai-insights' && (
+            <div className="max-w-6xl mx-auto animate-in zoom-in-95 duration-700">
+              <div className="bg-white rounded-[5rem] shadow-2xl overflow-hidden min-h-[850px] flex flex-col border border-slate-200">
+                <div className="bg-slate-900 p-16 text-white flex items-center justify-between">
+                  <div className="flex items-center gap-8">
+                    <div className="w-16 h-16 bg-indigo-500 rounded-[2rem] flex items-center justify-center text-white shadow-2xl shadow-indigo-500/50"><Icons.AI /></div>
+                    <div>
+                      <h3 className="text-4xl font-black tracking-tighter uppercase">Forensic Vault</h3>
+                      <p className="text-slate-400 text-xs font-bold uppercase tracking-[0.2em] mt-2">Inventory Integrity Analyst v5.3</p>
                     </div>
                   </div>
-                  <AnalysisCharts data={filteredRecords} />
-                </>
-              )}
-
-              {filteredRecords.length === 0 && view !== 'report-upload' && (
-                <div className="flex flex-col items-center justify-center py-40 text-slate-300">
-                  <Icons.Alert /><p className="text-xl font-black uppercase tracking-widest mt-6">No Data for Selection</p>
-                  <p className="text-sm font-medium mt-2">Activate months in the timeline above.</p>
                 </div>
-              )}
 
-              {view === 'ai-insights' && (
-                <div className="max-w-5xl mx-auto pb-20 animate-in slide-in-from-bottom-5">
-                  <div className="bg-white rounded-[4rem] border border-slate-200 shadow-2xl overflow-hidden min-h-[700px] flex flex-col">
-                    <div className="bg-slate-900 p-8 text-white flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 bg-indigo-500 rounded-2xl flex items-center justify-center text-white"><Icons.AI /></div>
-                        <div>
-                          <h3 className="text-xl font-black tracking-tight">The Shrink Shrink</h3>
-                          <p className="text-slate-400 text-[9px] font-bold uppercase tracking-widest">Inventory Health Specialist</p>
-                        </div>
-                      </div>
-                      <button onClick={() => setView('dashboard')} className="px-5 py-2 hover:bg-white/10 rounded-xl font-bold text-[10px] uppercase transition-all border border-white/20">Return to Charts</button>
+                <div className="flex-1 flex overflow-hidden">
+                  <div className="w-96 bg-slate-50 border-r border-slate-200 p-12 space-y-10 flex flex-col overflow-y-auto custom-scrollbar">
+                    <div>
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase mb-8 tracking-[0.15em] border-b border-slate-200 pb-2">Diagnostic Scan</h4>
+                      <button onClick={startDeepDive} className={`w-full p-10 rounded-[3rem] flex flex-col items-center gap-5 transition-all relative border-2 ${deepDiveStatus === 'analyzing' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 cursor-wait' : deepDiveStatus === 'ready' ? 'bg-emerald-500 border-emerald-400 text-white shadow-2xl scale-[1.02]' : 'bg-white border-slate-200 hover:border-indigo-400 hover:shadow-xl'}`}>
+                        <div className={`text-5xl ${deepDiveStatus === 'analyzing' ? 'animate-pulse' : ''}`}>{deepDiveStatus === 'ready' ? '📊' : '🩺'}</div>
+                        <div className="text-center"><span className="font-black uppercase tracking-tighter text-base">{deepDiveStatus === 'idle' ? 'Full Forensic Audit' : deepDiveStatus === 'analyzing' ? 'Auditing Ledger...' : 'Audit Generated'}</span></div>
+                        {deepDiveStatus === 'ready' && <div className="text-[10px] font-black uppercase tracking-widest mt-1 opacity-80">Click to View Diagnosis</div>}
+                      </button>
                     </div>
-                    
-                    <div className="flex-1 flex flex-col lg:flex-row">
-                      {/* Side Suggestions */}
-                      <div className="lg:w-80 bg-slate-50 border-r border-slate-100 p-8 space-y-4 flex flex-col">
-                        <button 
-                          onClick={() => handleRunAI("Dr. Shrink, please perform a deep analytical dive into this market's data. Identify the key operational and theft-related trends. Extrapolate the data to show me the potential savings if we correct these issues over the next 3 months. Help me distinguish between likely driver errors (overages) and actual loss (shortages), and provide a constructive plan to improve our accuracy score.")} 
-                          disabled={isAnalyzing}
-                          className="w-full bg-emerald-500 text-white p-5 rounded-2xl shadow-lg hover:bg-emerald-600 hover:shadow-emerald-200 hover:scale-[1.02] transition-all text-center group mb-4 relative overflow-hidden"
-                        >
-                          <div className="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
-                          <div className="relative">
-                            <span className="text-2xl mb-2 block">🩺</span>
-                            <span className="font-black uppercase tracking-widest text-sm block">Dig Deep!</span>
-                            <span className="text-[9px] font-bold opacity-80 block mt-1">Operational Diagnosis</span>
-                          </div>
-                        </button>
 
-                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Triage Questions</h4>
-                        {SUGGESTED_QUESTIONS.map((q, i) => (
-                          <button key={i} onClick={() => handleRunAI(q)} disabled={isAnalyzing} className="w-full text-left bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:border-indigo-400 hover:shadow-md transition-all text-xs font-bold text-slate-600 leading-relaxed group">
-                            <div className="flex gap-3">
-                              <span className="text-indigo-400 font-black">Q.</span>
-                              {q}
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-
-                      {/* Main Interaction Area */}
-                      <div className="flex-1 flex flex-col">
-                        <div ref={scrollRef} className="p-12 flex-1 overflow-y-auto custom-scrollbar bg-white relative">
-                          {aiAnalysis ? (
-                            <div className="prose prose-slate max-w-none text-slate-700 whitespace-pre-wrap leading-relaxed font-medium bg-slate-50/50 p-10 rounded-[3rem] border border-slate-100 animate-in fade-in duration-500">
-                              {aiAnalysis}
-                            </div>
-                          ) : (
-                            <div className="flex flex-col items-center justify-center py-32 text-center opacity-50">
-                              <div className="w-20 h-20 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mb-6"><Icons.AI /></div>
-                              <h4 className="text-lg font-black text-slate-900 mb-1">The Doctor is In.</h4>
-                              <p className="text-slate-400 text-sm max-w-sm">Click "Dig Deep!" for a constructive operational plan, or ask me about specific symptoms.</p>
-                            </div>
-                          )}
-                          {isAnalyzing && (
-                            <div className="mt-8 flex gap-4 items-center bg-indigo-50/50 p-6 rounded-3xl border border-indigo-100 animate-pulse">
-                               <div className="animate-spin h-5 w-5 border-2 border-indigo-600 border-t-transparent rounded-full" />
-                               <span className="text-xs font-black text-indigo-600 uppercase tracking-widest">The Shrink Shrink is analyzing...</span>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="p-10 bg-slate-50/80 border-t border-slate-100">
-                          <div className="relative group">
-                            <input 
-                              type="text" 
-                              value={aiUserPrompt} 
-                              onChange={(e) => setAiUserPrompt(e.target.value)}
-                              onKeyDown={(e) => e.key === 'Enter' && handleRunAI()}
-                              placeholder="Describe the operational symptoms..."
-                              className="w-full bg-white border-2 border-slate-200 group-focus-within:border-indigo-500 rounded-[2.5rem] px-10 py-6 text-sm font-semibold outline-none transition-all pr-24 shadow-lg shadow-slate-200/50"
-                            />
+                    <div className="pt-10 border-t border-slate-200">
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase mb-6 tracking-[0.15em]">Forensic Logic Scopes</h4>
+                      <div className="flex flex-col gap-4">
+                        {SUGGESTED_QUESTIONS.map((q, idx) => {
+                          const isActive = activeChip === q;
+                          return (
                             <button 
-                              onClick={() => handleRunAI()} 
-                              disabled={isAnalyzing || !aiUserPrompt.trim()}
-                              className="absolute right-4 top-4 w-14 h-14 bg-indigo-600 text-white rounded-full flex items-center justify-center shadow-xl hover:bg-indigo-700 disabled:bg-slate-300 transition-all hover:-translate-y-0.5"
+                              key={idx} 
+                              disabled={isQuickAnalyzing}
+                              onClick={() => handleRunQuickAI(q)} 
+                              className={`text-left p-5 rounded-3xl border text-[11px] font-bold uppercase tracking-widest transition-all relative overflow-hidden group ${isActive ? 'bg-indigo-600 border-indigo-500 text-white shadow-xl translate-x-2' : 'bg-white border-slate-200 text-slate-500 hover:border-indigo-400 hover:text-indigo-600 hover:shadow-md'}`}
                             >
-                              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+                              <div className="relative z-10 flex items-center justify-between">
+                                <span className="max-w-[85%] leading-relaxed">{q}</span>
+                                {isActive && (
+                                  <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                                )}
+                              </div>
+                              {!isActive && <div className="absolute right-4 opacity-0 group-hover:opacity-100 transition-opacity">→</div>}
                             </button>
-                          </div>
-                          <p className="text-[9px] text-slate-400 mt-4 text-center font-bold uppercase tracking-widest">Examining {filteredRecords.length} Records</p>
-                        </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 flex flex-col bg-white">
+                    <div ref={scrollRef} className="flex-1 p-16 overflow-y-auto bg-white custom-scrollbar">
+                       {quickAiText ? (
+                         <div className="prose prose-indigo max-w-none font-medium text-slate-700 whitespace-pre-wrap leading-relaxed animate-in fade-in slide-in-from-bottom-6 duration-700 bg-slate-50/50 p-16 rounded-[4rem] border border-slate-100 shadow-inner">
+                           {quickAiText}
+                         </div>
+                       ) : isQuickAnalyzing ? (
+                         <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-8 animate-pulse">
+                            <div className="w-20 h-20 bg-indigo-50 rounded-[2rem] flex items-center justify-center text-indigo-500 animate-bounce shadow-xl"><Icons.AI /></div>
+                            <div className="text-center">
+                               <h4 className="text-2xl font-black text-slate-900 tracking-tighter uppercase">Diagnosis Active</h4>
+                               <p className="text-sm font-bold uppercase tracking-widest mt-2 text-slate-400">Querying forensic ledger for "{activeChip || 'Custom Audit'}"...</p>
+                            </div>
+                         </div>
+                       ) : (
+                         <div className="h-full flex flex-col items-center justify-center text-slate-300 opacity-40 text-center">
+                           <div className="w-28 h-28 bg-slate-50 rounded-full flex items-center justify-center mb-10 border border-slate-100 shadow-sm"><Icons.AI /></div>
+                           <h4 className="text-3xl font-black text-slate-900 tracking-tighter uppercase">Audit Awaiting Query</h4>
+                           <p className="max-w-xs text-base mt-4 font-semibold italic leading-relaxed">"System Accuracy: {stats.accuracy}%. Forensic engine calibrated for Scanned (KF/F/B) vs. Manual Planogram discrepancies."</p>
+                         </div>
+                       )}
+                    </div>
+                    <div className="p-16 bg-slate-50/50 border-t border-slate-200">
+                      <div className="relative group max-w-4xl mx-auto">
+                        <input 
+                          type="text" 
+                          value={aiUserPrompt} 
+                          onChange={(e) => setAiUserPrompt(e.target.value)} 
+                          onKeyDown={(e) => e.key === 'Enter' && handleRunQuickAI()} 
+                          disabled={isQuickAnalyzing}
+                          placeholder="Ask about missed KF/F/B delivery 'Adds' or snack/drink counting errors..." 
+                          className="w-full bg-white border-4 border-slate-200 group-focus-within:border-indigo-500 rounded-[3rem] px-14 py-8 text-base font-bold outline-none transition-all pr-32 shadow-2xl shadow-slate-200/50 placeholder:text-slate-300 disabled:opacity-50" 
+                        />
+                        <button 
+                          onClick={() => handleRunQuickAI()} 
+                          disabled={isQuickAnalyzing || !aiUserPrompt.trim()} 
+                          className="absolute right-6 top-6 w-16 h-16 bg-indigo-600 text-white rounded-[1.5rem] flex items-center justify-center shadow-xl hover:bg-indigo-700 disabled:bg-slate-300 transition-all active:scale-95 shadow-indigo-200"
+                        >
+                          {isQuickAnalyzing ? (
+                             <div className="w-6 h-6 border-4 border-white/20 border-t-white rounded-full animate-spin" />
+                          ) : <Icons.AI />}
+                        </button>
                       </div>
                     </div>
                   </div>
                 </div>
-              )}
+              </div>
             </div>
           )}
         </div>

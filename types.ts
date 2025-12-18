@@ -15,14 +15,6 @@ export interface ShrinkRecord {
   period: string; // e.g., "2024-01" or "January"
 }
 
-export interface SpoilsRecord {
-  id: string;
-  marketName: string;
-  date: string;
-  category: string;
-  itemName: string;
-  amount: number;
-  units: number;
-}
+export type DeepDiveStatus = 'idle' | 'analyzing' | 'ready';
 
 export type ViewType = 'dashboard' | 'report-upload' | 'ai-insights';

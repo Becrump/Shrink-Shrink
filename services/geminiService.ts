@@ -2,15 +2,12 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ShrinkRecord } from "../types";
 
-export const queryMarketAI = async (
-  records: ShrinkRecord[], 
-  summaryStats: any,
-  userQuestion: string,
-  onChunk: (text: string) => void
-) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  // Aggregate Monthly Trends for Extrapolation
+const isColdFoodManual = (name: string, code: string) => {
+  const coldPrefixRegex = /^(KF|F\s|B\s)/i;
+  return coldPrefixRegex.test(code) || coldPrefixRegex.test(name);
+};
+
+const getAggregates = (records: ShrinkRecord[]) => {
   const monthlyAgg = records.reduce((acc: any, r) => {
     if (!acc[r.period]) acc[r.period] = { loss: 0, rev: 0 };
     acc[r.period].loss += r.shrinkLoss;
@@ -18,52 +15,66 @@ export const queryMarketAI = async (
     return acc;
   }, {});
 
-  // Category Breakdown
-  const categoryStats = records.reduce((acc: any, r) => {
-    const cat = r.category || 'Unknown';
-    if (!acc[cat]) acc[cat] = 0;
-    acc[cat] += r.shrinkLoss;
-    return acc;
-  }, {});
+  const marketNames = Array.from(new Set(records.map(r => r.marketName))).filter(Boolean);
 
   const outliers = records
     .sort((a, b) => b.shrinkLoss - a.shrinkLoss)
-    .slice(0, 30)
+    .slice(0, 50)
     .map(r => ({
       item: r.itemName,
+      itemCode: r.itemNumber,
       market: r.marketName,
-      loss: r.shrinkLoss,
       variance: r.invVariance,
-      rev: r.totalRevenue
+      impact: r.invVariance * (r.unitCost || 0),
+      isFresh: isColdFoodManual(r.itemName, r.itemNumber)
     }));
 
-  const activeSegment = summaryStats.activeContext || 'ALL';
+  return { monthlyAgg, outliers, marketNames };
+};
+
+const OPERATIONAL_CONTEXT = `
+  OPERATIONAL WORKFLOW CONTEXT:
+  - COLD FOOD (Fresh): 
+    - IDENTIFIERS: Item Number or Name starts with "KF", "F ", or "B ".
+    - INVENTORY METHOD: UPC Scanning (Highly Precise). 
+    - REASONING: Cold Food varies weekly; scanning UPCs is faster than searching a manual list.
+    - RECEIVING ("Adds"): Manual Tablet Entry (Highly Prone to Human Error).
+    
+  - FORENSIC LOGIC: NAMING CONFUSION DETECTOR
+    - Staff often mis-select items on the tablet during receiving. 
+    - LOOK FOR: An Overage (Gain) in one item and a Shrink (Loss) in a similarly named item (e.g., "Classic Cheeseburger" overage vs "Cheeseburger" shrink).
+    - If names are >80% similar and variances are inverted, FLAG this as "Naming Confusion" rather than physical theft.
+    
+  - SNACKS & DRINKS (Ambient): 
+    - INVENTORY METHOD: Manual Count vs. Fixed Planogram (Sloppier).
+    - FORENSIC MARKER: Variances here are typically true shrinkage or counting errors.
+`;
+
+export const queryMarketAIQuick = async (
+  records: ShrinkRecord[], 
+  summaryStats: any,
+  userQuestion: string,
+  onChunk: (text: string) => void
+) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const { marketNames, outliers } = getAggregates(records);
 
   const prompt = `
-    ROLE: "The Shrink Shrink" - A highly skilled Micro-Market Inventory Analyst and Operational Strategist.
+    ROLE: Senior Forensic Inventory Auditor.
+    ${OPERATIONAL_CONTEXT}
     
-    SYSTEM CONTEXT: 
-    - Platform: Cantaloupe Seed Markets.
-    - Stats: Rev $${summaryStats.totalRevenue}, Shrink $${summaryStats.totalShrink}, Accuracy ${summaryStats.accuracy}%.
-    - Top Issue Items: ${JSON.stringify(outliers)}
-    - Active Segment: ${activeSegment}
-    - Monthly Trends: ${JSON.stringify(monthlyAgg)}
-    - Category Breakdown: ${JSON.stringify(categoryStats)}
+    DATA CONTEXT:
+    - Stats: Rev $${summaryStats.totalRevenue.toLocaleString()}, Shrink $${summaryStats.totalShrink.toLocaleString()}, Overage $${summaryStats.totalOverage.toLocaleString()}.
+    - Markets: ${marketNames.join(", ")}
+    - Top Variances: ${JSON.stringify(outliers.slice(0, 20))}
     
     USER QUESTION: "${userQuestion}"
     
-    KNOWLEDGE BASE (CANTALOUPE SEED OPERATIONAL NUANCE):
-    1. Operational vs Theft: You understand that not all variance is theft. Overage (positive variance) often means receiving errors (drivers skipping handheld scans). Shortage is the main concern for profitability (theft, spoilage, missed scans).
-    2. Focus: Help the operator tighten procedures to maximize profit.
-    3. Constructive Extrapolation: When projecting trends, focus on the "Opportunity Cost" of not fixing the issue.
-    
-    GUIDELINES:
-    - Persona: Analytical, helpful, constructive, and precise. You are a partner in the user's business success, not a critic.
-    - Metaphor: You can use "health" and "diagnosis" metaphors (e.g., "symptoms", "vital signs"), but keep it optimistic—focused on healing the market and stopping the leaks.
-    - DIG DEEP: Look for patterns. Is it a specific driver route? A specific category like "Beverages"? 
-    - EXTRAPOLATE: Project trends forward to show the *value* of fixing the issue now. (e.g., "Fixing this could save $X over 3 months").
-    - Be Solution-Oriented: Prescribe actionable fixes (e.g., "Audit the Tuesday delivery," "Review spoilage logs", "Spot check the kiosk camera").
-    - Use Markdown for your analysis.
+    STRICT RESPONSE GUIDELINES:
+    1. EXPLICITLY look for naming confusion (similar names, opposite variances).
+    2. Example: Flag if "Pepperoni Pizza" has a gain while "Pep Pizza" has a loss.
+    3. Focus on "Missed Adds" for Cold Food (KF/F/B) overages.
+    4. Use clinical, bulleted Markdown.
   `;
 
   try {
@@ -74,36 +85,61 @@ export const queryMarketAI = async (
 
     let fullText = "";
     for await (const chunk of responseStream) {
-      const chunkText = chunk.text;
-      if (chunkText) {
-        fullText += chunkText;
+      if (chunk.text) {
+        fullText += chunk.text;
         onChunk(fullText);
       }
     }
   } catch (error) {
-    onChunk("### Operational Alert\n\nI am unable to complete the analysis at this time due to a connection issue. Please check the data feeds.");
+    onChunk("Diagnosis failed. Check forensic engine connection.");
+  }
+};
+
+export const queryMarketAIDeep = async (
+  records: ShrinkRecord[], 
+  summaryStats: any
+): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const { monthlyAgg, outliers, marketNames } = getAggregates(records);
+
+  const prompt = `
+    ROLE: "The Shrink Shrink" - Chief Forensic Inventory Partner.
+    ${OPERATIONAL_CONTEXT}
+    
+    VITALS: 
+    - Revenue: $${summaryStats.totalRevenue.toLocaleString()}
+    - Shrink: $${summaryStats.totalShrink.toLocaleString()}
+    - Integrity: ${summaryStats.accuracy}%
+    
+    AUDIT REPORT SECTIONS:
+    1. OPERATIONAL HEALTH: Receiving discipline trends.
+    2. NAMING FORENSICS: Identify paired item errors (e.g., "Cheeseburger" vs "Classic Cheeseburger"). List specific matches.
+    3. COLD FOOD DISCREPANCIES: UPC scan data vs missed manual tablet entry.
+    4. ACTIONABLE REMEDIES: 5 steps to fix naming confusion and tablet compliance.
+    
+    DATA: ${JSON.stringify(outliers)}
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-pro-preview",
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingBudget: 4000 }
+      }
+    });
+    return response.text || "Diagnostic report generation failed.";
+  } catch (error: any) {
+    if (error?.message?.includes("entity was not found")) {
+      return "RESELECT_KEY";
+    }
+    return "Forensic connection failed. Re-verify API credentials.";
   }
 };
 
 export const parseRawReportText = async (rawText: string): Promise<{ records: Partial<ShrinkRecord>[], detectedPeriod: string, detectedMarket: string }> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  const prompt = `
-    ACT AS: Forensic Data Entry Clerk for Cantaloupe Seed Reports.
-    INPUT: Messy copy-pasted text from a Cantaloupe Seed / Micro-Market report.
-    TASK: Extract all item rows, the Report Date (Period), and the Market Name.
-    
-    RULES:
-    1. Items usually start with numbers (Item#). Look for Names, Rev, and Shrink.
-    2. DETECT THE DATE: Find strings like "March 2024", "03/01/24", etc.
-    3. DETECT MARKET: Look for "Market:", "Location:", or header text.
-    4. Return exactly valid JSON.
-    
-    TEXT:
-    """
-    ${rawText.slice(0, 20000)}
-    """
-  `;
+  const prompt = `Extract inventory data from this text. Focus on identifying the human-readable Market Name, the Reporting Period, and the itemized variances. Return valid JSON.\n\nTEXT:\n${rawText.slice(0, 15000)}`;
 
   try {
     const response = await ai.models.generateContent({
@@ -125,26 +161,17 @@ export const parseRawReportText = async (rawText: string): Promise<{ records: Pa
                   itemName: { type: Type.STRING },
                   invVariance: { type: Type.NUMBER },
                   totalRevenue: { type: Type.NUMBER },
-                  shrinkLoss: { type: Type.NUMBER },
                   unitCost: { type: Type.NUMBER }
-                },
-                required: ["itemNumber", "itemName", "shrinkLoss"]
+                }
               }
             }
           }
         }
       }
     });
-
     const parsed = JSON.parse(response.text || "{}");
-    const records = (parsed.items || []).map((item: any) => ({
-      ...item,
-      period: parsed.detectedPeriod || new Date().toLocaleString('default', { month: 'long' }),
-      marketName: parsed.detectedMarket || 'Imported Market'
-    }));
-
     return { 
-      records, 
+      records: parsed.items || [], 
       detectedPeriod: parsed.detectedPeriod || 'Current',
       detectedMarket: parsed.detectedMarket || 'Unidentified'
     };
