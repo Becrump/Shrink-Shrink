@@ -20,9 +20,9 @@ const MONTHS = [
 ];
 
 const SUGGESTED_QUESTIONS = [
-  "What are the most alarming symptoms in this market?",
-  "Diagnose the high-value items vs small-ticket shrink.",
-  "Prognosis: Where will shrink be in 3 months if untreated?",
+  "What are the main opportunities to improve accuracy?",
+  "Analyze high-value items vs small-ticket shrink trends.",
+  "Project the potential savings over 3 months if we fix these leaks.",
   "Isolate the cold food anomalies: Spoils or Theft?"
 ];
 
@@ -505,7 +505,7 @@ const App: React.FC = () => {
                         <div className="w-10 h-10 bg-indigo-500 rounded-2xl flex items-center justify-center text-white"><Icons.AI /></div>
                         <div>
                           <h3 className="text-xl font-black tracking-tight">The Shrink Shrink</h3>
-                          <p className="text-slate-400 text-[9px] font-bold uppercase tracking-widest">Dr. of Inventory & Loss Prevention</p>
+                          <p className="text-slate-400 text-[9px] font-bold uppercase tracking-widest">Inventory Health Specialist</p>
                         </div>
                       </div>
                       <button onClick={() => setView('dashboard')} className="px-5 py-2 hover:bg-white/10 rounded-xl font-bold text-[10px] uppercase transition-all border border-white/20">Return to Charts</button>
@@ -515,15 +515,15 @@ const App: React.FC = () => {
                       {/* Side Suggestions */}
                       <div className="lg:w-80 bg-slate-50 border-r border-slate-100 p-8 space-y-4 flex flex-col">
                         <button 
-                          onClick={() => handleRunAI("Doctor, I need a full examination of this market. Dig deep into the data. What are the vital signs? Are there symptoms of theft, driver error, or system issues? Extrapolate the current trends: if we don't treat this now, what does the patient look like in 3 months? Differentiate between 'good' variances (likely timing/receiving) and 'bad' variances (loss).")} 
+                          onClick={() => handleRunAI("Dr. Shrink, please perform a deep analytical dive into this market's data. Identify the key operational and theft-related trends. Extrapolate the data to show me the potential savings if we correct these issues over the next 3 months. Help me distinguish between likely driver errors (overages) and actual loss (shortages), and provide a constructive plan to improve our accuracy score.")} 
                           disabled={isAnalyzing}
-                          className="w-full bg-red-500 text-white p-5 rounded-2xl shadow-lg hover:bg-red-600 hover:shadow-red-200 hover:scale-[1.02] transition-all text-center group mb-4 relative overflow-hidden"
+                          className="w-full bg-emerald-500 text-white p-5 rounded-2xl shadow-lg hover:bg-emerald-600 hover:shadow-emerald-200 hover:scale-[1.02] transition-all text-center group mb-4 relative overflow-hidden"
                         >
                           <div className="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
                           <div className="relative">
                             <span className="text-2xl mb-2 block">🩺</span>
                             <span className="font-black uppercase tracking-widest text-sm block">Dig Deep!</span>
-                            <span className="text-[9px] font-bold opacity-80 block mt-1">Full Diagnostic Scan</span>
+                            <span className="text-[9px] font-bold opacity-80 block mt-1">Operational Diagnosis</span>
                           </div>
                         </button>
 
@@ -549,13 +549,13 @@ const App: React.FC = () => {
                             <div className="flex flex-col items-center justify-center py-32 text-center opacity-50">
                               <div className="w-20 h-20 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mb-6"><Icons.AI /></div>
                               <h4 className="text-lg font-black text-slate-900 mb-1">The Doctor is In.</h4>
-                              <p className="text-slate-400 text-sm max-w-sm">Click "Dig Deep!" for a full examination, or ask me about specific symptoms.</p>
+                              <p className="text-slate-400 text-sm max-w-sm">Click "Dig Deep!" for a constructive operational plan, or ask me about specific symptoms.</p>
                             </div>
                           )}
                           {isAnalyzing && (
                             <div className="mt-8 flex gap-4 items-center bg-indigo-50/50 p-6 rounded-3xl border border-indigo-100 animate-pulse">
                                <div className="animate-spin h-5 w-5 border-2 border-indigo-600 border-t-transparent rounded-full" />
-                               <span className="text-xs font-black text-indigo-600 uppercase tracking-widest">The Shrink Shrink is diagnosing...</span>
+                               <span className="text-xs font-black text-indigo-600 uppercase tracking-widest">The Shrink Shrink is analyzing...</span>
                             </div>
                           )}
                         </div>
@@ -567,7 +567,7 @@ const App: React.FC = () => {
                               value={aiUserPrompt} 
                               onChange={(e) => setAiUserPrompt(e.target.value)}
                               onKeyDown={(e) => e.key === 'Enter' && handleRunAI()}
-                              placeholder="Describe the symptoms..."
+                              placeholder="Describe the operational symptoms..."
                               className="w-full bg-white border-2 border-slate-200 group-focus-within:border-indigo-500 rounded-[2.5rem] px-10 py-6 text-sm font-semibold outline-none transition-all pr-24 shadow-lg shadow-slate-200/50"
                             />
                             <button 
