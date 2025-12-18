@@ -76,17 +76,24 @@ const normalizePeriod = (str: string): string => {
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
   
-  // Fix: Standardized check for API key in either window.process or standard process global.
+  // Robust check that prevents bundler optimization from removing the check
   const checkGlobalKey = useCallback(() => {
     try {
-      const key = (window as any).process?.env?.API_KEY || (process as any).env?.API_KEY;
-      return !!(key && key.trim().length > 0);
+      // 1. Check window (Worker injection)
+      const windowKey = (window as any).process?.env?.API_KEY;
+      if (windowKey && windowKey.trim().length > 0) return true;
+      
+      // 2. Check global process (Build-time injection)
+      const processKey = typeof process !== 'undefined' ? (process.env?.API_KEY || (process.env as any)?.VITE_API_KEY) : null;
+      if (processKey && processKey.trim().length > 0) return true;
+
+      return false;
     } catch {
       return false;
     }
   }, []);
 
-  const [hasApiKey, setHasApiKey] = useState<boolean>(checkGlobalKey);
+  const [hasApiKey, setHasApiKey] = useState<boolean>(checkGlobalKey());
   
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
@@ -134,15 +141,17 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const checkKey = async () => {
+      let isPresent = checkGlobalKey();
+      
       if (window.aistudio) {
-        const selected = await window.aistudio.hasSelectedApiKey();
-        setHasApiKey(selected || checkGlobalKey());
-      } else {
-        setHasApiKey(checkGlobalKey());
+        const studioPresent = await window.aistudio.hasSelectedApiKey();
+        isPresent = isPresent || studioPresent;
       }
+      
+      setHasApiKey(isPresent);
     };
-    // Fix: Ensure we periodically sync the key status as it might be injected late by workers.
-    const interval = setInterval(checkKey, 2000);
+
+    const interval = setInterval(checkKey, 1000);
     checkKey();
     return () => clearInterval(interval);
   }, [checkGlobalKey]);
@@ -152,7 +161,7 @@ const App: React.FC = () => {
       await window.aistudio.openSelectKey();
       setHasApiKey(true);
     } else {
-      alert("API_KEY not found. Please ensure your Cloudflare environment variables are set correctly.");
+      alert("Forensic Engine: API_KEY not detected.\n\nRequired Action:\n1. Go to Cloudflare Dashboard.\n2. Workers & Pages -> shrink-shrink.\n3. Settings -> Variables.\n4. Add 'API_KEY' as a variable (not secret).\n5. REDEPLOY the project.");
     }
   };
 
@@ -255,7 +264,6 @@ const App: React.FC = () => {
     
     try {
       await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
-        // Fix: Detect if service signaled that key needs re-selection.
         if (text === "RESELECT_KEY") {
           setHasApiKey(false);
           handleSelectKey();
@@ -280,7 +288,6 @@ const App: React.FC = () => {
     if (deepDiveStatus === 'analyzing' || filteredRecords.length === 0) return;
     setDeepDiveStatus('analyzing');
     queryMarketAIDeep(filteredRecords, stats).then(result => {
-      // Fix: Handle key re-selection for deep dive.
       if (result === "RESELECT_KEY") {
         setHasApiKey(false);
         setDeepDiveStatus('idle');

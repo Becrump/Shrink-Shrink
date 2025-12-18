@@ -1,5 +1,5 @@
 
-// Fix: Add declaration for HTMLRewriter which is a global class available in the Cloudflare Workers environment.
+// Declaration for Cloudflare Workers HTMLRewriter
 declare const HTMLRewriter: any;
 
 export interface Env {
@@ -14,31 +14,34 @@ export default {
     // Only modify successful HTML responses
     const contentType = response.headers.get("content-type") || "";
     if (response.ok && contentType.includes("text/html")) {
+      // Use the binding from Cloudflare environment
       const apiKey = env.API_KEY || "";
       
-      // Log to Cloudflare Workers Dashboard (Real-time logs)
+      // Log for Cloudflare Workers Real-time logs
       if (!apiKey) {
-        console.warn("Worker: API_KEY environment variable is MISSING or EMPTY.");
-      } else {
-        console.log("Worker: API_KEY detected and ready for injection.");
+        console.warn("WORKER ERROR: API_KEY is missing in the Cloudflare Dashboard environment variables for project 'shrink-shrink'.");
       }
 
       const injectionScript = `
         (function() {
-          window.process = window.process || {};
-          window.process.env = window.process.env || {};
-          window.process.env.API_KEY = ${JSON.stringify(apiKey)};
-          
-          if (!window.process.env.API_KEY) {
-            console.error("Forensic AI: API_KEY is undefined. Ensure it is set in Cloudflare Dashboard -> Settings -> Variables.");
-          } else {
-            console.info("Forensic AI: Environment variables synchronized from Cloudflare.");
+          try {
+            window.process = window.process || { env: {} };
+            window.process.env = window.process.env || {};
+            // Injecting key from Worker Environment
+            window.process.env.API_KEY = ${JSON.stringify(apiKey)};
+            
+            console.log("Forensic AI [Worker]: Sync check - Key Length: " + (window.process.env.API_KEY ? window.process.env.API_KEY.length : 0));
+            
+            if (!window.process.env.API_KEY || window.process.env.API_KEY === "") {
+              console.error("Forensic AI [Worker]: API_KEY IS EMPTY. Action Required: Go to Cloudflare Dashboard -> Workers & Pages -> shrink-shrink -> Settings -> Variables -> Add 'API_KEY' and REDEPLOY.");
+            }
+          } catch (e) {
+            console.error("Forensic AI [Worker]: Failed to inject environment variables", e);
           }
         })();
       `;
 
-      // Use HTMLRewriter to inject the script at the start of the <head>
-      // Fix: HTMLRewriter is now declared globally above.
+      // Prepend to head ensuring it's the very first script to execute
       return new HTMLRewriter()
         .on("head", {
           element(element: any) {
