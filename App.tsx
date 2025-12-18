@@ -85,7 +85,7 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const [hasApiKey, setHasApiKey] = useState<boolean>(checkGlobalKey);
+  const [hasApiKey, setHasApiKey] = useState<boolean>(false);
   
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
@@ -131,6 +131,15 @@ const App: React.FC = () => {
     }
   }, [records, selectedMonths, selectedMarketFilter, activeSegment]);
 
+  const handleSelectKey = async () => {
+    if (window.aistudio) {
+      await window.aistudio.openSelectKey();
+      setHasApiKey(true);
+    } else {
+      alert("API_KEY not found. Please set it in Cloudflare Dashboard -> shrink-shrink -> Settings -> Variables.");
+    }
+  };
+
   useEffect(() => {
     const checkKey = async () => {
       if (window.aistudio) {
@@ -140,20 +149,10 @@ const App: React.FC = () => {
         setHasApiKey(checkGlobalKey());
       }
     };
-    // Periodic check in case injection happens late
     const interval = setInterval(checkKey, 2000);
     checkKey();
     return () => clearInterval(interval);
   }, [checkGlobalKey]);
-
-  const handleSelectKey = async () => {
-    if (window.aistudio) {
-      await window.aistudio.openSelectKey();
-      setHasApiKey(true);
-    } else {
-      alert("API_KEY not found. Please set it in Cloudflare Dashboard -> shrink-shrink -> Settings -> Variables.");
-    }
-  };
 
   const purgeLedger = () => {
     if (window.confirm("Purge historical forensic data?")) {
@@ -242,7 +241,6 @@ const App: React.FC = () => {
   }, [filteredRecords]);
 
   const handleRunQuickAI = async (customPrompt?: string) => {
-    if (!hasApiKey) return handleSelectKey();
     const question = customPrompt || aiUserPrompt;
     if (!question.trim() || filteredRecords.length === 0 || isQuickAnalyzing) return;
     
@@ -253,7 +251,14 @@ const App: React.FC = () => {
     setView('ai-insights');
     
     try {
-      await queryMarketAIQuick(filteredRecords, stats, question, (text) => setQuickAiText(text));
+      await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
+        if (text.startsWith("AUTH_REQUIRED")) {
+          setQuickAiText("");
+          handleSelectKey();
+        } else {
+          setQuickAiText(text);
+        }
+      });
     } finally {
       setIsQuickAnalyzing(false);
       setActiveChip(null);
@@ -261,7 +266,6 @@ const App: React.FC = () => {
   };
 
   const startDeepDive = async () => {
-    if (!hasApiKey) return handleSelectKey();
     if (deepDiveStatus === 'ready') {
       setQuickAiText(deepDiveResult);
       setDeepDiveStatus('idle');
@@ -271,7 +275,7 @@ const App: React.FC = () => {
     if (deepDiveStatus === 'analyzing' || filteredRecords.length === 0) return;
     setDeepDiveStatus('analyzing');
     queryMarketAIDeep(filteredRecords, stats).then(result => {
-      if (result === "RESELECT_KEY") {
+      if (result === "AUTH_REQUIRED") {
         setHasApiKey(false);
         setDeepDiveStatus('idle');
         handleSelectKey();

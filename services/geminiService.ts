@@ -2,8 +2,13 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ShrinkRecord } from "../types";
 
-// Hardcoded API key as requested to ensure forensic connection stability
-const API_KEY = "AIzaSyCOGUsCIUXO0uiQqIPXnn53_Fe2SUKBT48";
+const getAI = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) {
+    throw new Error("API_KEY_MISSING");
+  }
+  return new GoogleGenAI({ apiKey });
+};
 
 const isColdFoodManual = (name: string, code: string) => {
   const coldPrefixRegex = /^(KF|F\s|B\s)/i;
@@ -53,7 +58,7 @@ export const queryMarketAIQuick = async (
   onChunk: (text: string) => void
 ) => {
   try {
-    const ai = new GoogleGenAI({ apiKey: API_KEY });
+    const ai = getAI();
     const { marketNames, outliers } = getAggregates(records);
 
     const prompt = `
@@ -87,7 +92,13 @@ export const queryMarketAIQuick = async (
       }
     }
   } catch (error: any) {
-    onChunk("Diagnosis failed. Check forensic engine connection. Error: " + error.message);
+    if (error.message === "API_KEY_MISSING") {
+      onChunk("AUTH_REQUIRED: API Key missing.");
+    } else if (error.message?.includes("leaked") || error.message?.includes("403")) {
+      onChunk("AUTH_REQUIRED: The current API key is invalid or leaked. Please re-connect.");
+    } else {
+      onChunk("Diagnosis failed. Error: " + error.message);
+    }
   }
 };
 
@@ -96,7 +107,7 @@ export const queryMarketAIDeep = async (
   summaryStats: any
 ): Promise<string> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: API_KEY });
+    const ai = getAI();
     const { outliers } = getAggregates(records);
 
     const prompt = `
@@ -127,13 +138,16 @@ export const queryMarketAIDeep = async (
     });
     return response.text || "Diagnostic report generation failed.";
   } catch (error: any) {
-    return "Forensic connection failed. Re-verify API credentials. " + error.message;
+    if (error.message === "API_KEY_MISSING" || error.message?.includes("leaked") || error.message?.includes("403")) {
+      return "AUTH_REQUIRED";
+    }
+    return "Forensic connection failed: " + error.message;
   }
 };
 
 export const parseRawReportText = async (rawText: string): Promise<{ records: Partial<ShrinkRecord>[], detectedPeriod: string, detectedMarket: string }> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: API_KEY });
+    const ai = getAI();
     const prompt = `Extract inventory data from this text. Focus on identifying the human-readable Market Name, the Reporting Period, and the itemized variances. Return valid JSON.\n\nTEXT:\n${rawText.slice(0, 15000)}`;
 
     const response = await ai.models.generateContent({
