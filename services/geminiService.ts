@@ -3,9 +3,9 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { ShrinkRecord } from "../types";
 
 const validateKey = () => {
-  // Use a safe check to see if the key is available on window.process.env
+  // Use a safe check for the environment variable injected by the worker
   const key = window.process?.env?.API_KEY;
-  if (!key || key.trim() === "") {
+  if (!key || typeof key !== 'string' || key.trim() === "") {
     throw new Error("MISSING_API_KEY");
   }
   return key;
@@ -17,13 +17,6 @@ const isColdFoodManual = (name: string, code: string) => {
 };
 
 const getAggregates = (records: ShrinkRecord[]) => {
-  const monthlyAgg = records.reduce((acc: any, r) => {
-    if (!acc[r.period]) acc[r.period] = { loss: 0, rev: 0 };
-    acc[r.period].loss += r.shrinkLoss;
-    acc[r.period].rev += r.totalRevenue;
-    return acc;
-  }, {});
-
   const marketNames = Array.from(new Set(records.map(r => r.marketName))).filter(Boolean);
 
   const outliers = records
@@ -38,7 +31,7 @@ const getAggregates = (records: ShrinkRecord[]) => {
       isFresh: isColdFoodManual(r.itemName, r.itemNumber)
     }));
 
-  return { monthlyAgg, outliers, marketNames };
+  return { marketNames, outliers };
 };
 
 const OPERATIONAL_CONTEXT = `
@@ -104,7 +97,7 @@ export const queryMarketAIQuick = async (
     if (error.message === "MISSING_API_KEY") {
       onChunk("Forensic Key Missing. Please click 'Connect AI Hub' in the sidebar.");
     } else {
-      onChunk("Diagnosis failed. Check forensic engine connection.");
+      onChunk("Diagnosis failed. Check forensic engine connection. Error: " + error.message);
     }
   }
 };
@@ -145,10 +138,10 @@ export const queryMarketAIDeep = async (
     });
     return response.text || "Diagnostic report generation failed.";
   } catch (error: any) {
-    if (error.message === "MISSING_API_KEY" || error?.message?.includes("entity was not found")) {
+    if (error.message === "MISSING_API_KEY" || error?.message?.includes("entity was not found") || error?.message?.includes("API Key must be set")) {
       return "RESELECT_KEY";
     }
-    return "Forensic connection failed. Re-verify API credentials.";
+    return "Forensic connection failed. Re-verify API credentials. " + error.message;
   }
 };
 
@@ -192,6 +185,7 @@ export const parseRawReportText = async (rawText: string): Promise<{ records: Pa
       detectedMarket: parsed.detectedMarket || 'Unidentified'
     };
   } catch (error) {
+    console.error("Forensic Parser Error:", error);
     return { records: [], detectedPeriod: '', detectedMarket: '' };
   }
 };
