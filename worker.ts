@@ -4,7 +4,7 @@ declare const HTMLRewriter: any;
 
 export interface Env {
   ASSETS: { fetch: typeof fetch };
-  API_KEY?: string;
+  API_KEY?: any; // Changed to any for debugging purposes
 }
 
 export default {
@@ -14,12 +14,20 @@ export default {
     // Only modify successful HTML responses
     const contentType = response.headers.get("content-type") || "";
     if (response.ok && contentType.includes("text/html")) {
-      // Use the binding from Cloudflare environment
-      const apiKey = env.API_KEY || "";
-      
-      // Log for Cloudflare Workers Real-time logs
-      if (!apiKey) {
-        console.warn("WORKER ERROR: API_KEY is missing in the Cloudflare Dashboard environment variables for project 'shrink-shrink'.");
+      // Diagnostic log for Cloudflare dashboard
+      const rawKey = env.API_KEY;
+      const keyType = typeof rawKey;
+      let apiKey = "";
+
+      if (keyType === "string") {
+        apiKey = rawKey;
+        console.log(`Worker: API_KEY detected as STRING (Length: ${apiKey.length})`);
+      } else if (rawKey && keyType === "object") {
+        // If the user accidentally chose JSON, try to extract value
+        apiKey = rawKey.API_KEY || JSON.stringify(rawKey);
+        console.warn(`Worker: API_KEY detected as OBJECT. Type: ${keyType}. Content: ${JSON.stringify(rawKey)}`);
+      } else {
+        console.error(`Worker: API_KEY is MISSING or invalid type (${keyType})`);
       }
 
       const injectionScript = `
@@ -27,13 +35,14 @@ export default {
           try {
             window.process = window.process || { env: {} };
             window.process.env = window.process.env || {};
-            // Injecting key from Worker Environment
             window.process.env.API_KEY = ${JSON.stringify(apiKey)};
             
-            console.log("Forensic AI [Worker]: Sync check - Key Length: " + (window.process.env.API_KEY ? window.process.env.API_KEY.length : 0));
+            console.log("Forensic AI [Worker]: Key Type Check: ${keyType}");
             
             if (!window.process.env.API_KEY || window.process.env.API_KEY === "") {
-              console.error("Forensic AI [Worker]: API_KEY IS EMPTY. Action Required: Go to Cloudflare Dashboard -> Workers & Pages -> shrink-shrink -> Settings -> Variables -> Add 'API_KEY' and REDEPLOY.");
+              console.error("Forensic AI [Worker]: API_KEY IS EMPTY. Action Required: Ensure variable is 'Text' or 'Secret' in Cloudflare, NOT 'JSON'.");
+            } else {
+              console.info("Forensic AI [Worker]: API_KEY successfully injected.");
             }
           } catch (e) {
             console.error("Forensic AI [Worker]: Failed to inject environment variables", e);
@@ -41,7 +50,6 @@ export default {
         })();
       `;
 
-      // Prepend to head ensuring it's the very first script to execute
       return new HTMLRewriter()
         .on("head", {
           element(element: any) {
