@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { ShrinkRecord, ViewType, DeepDiveStatus } from './types';
 import { Icons } from './constants';
@@ -38,10 +39,10 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 const STORAGE_KEYS = {
-  RECORDS: 'shrink_records_v3',
-  MONTHS: 'shrink_months_v3',
-  MARKET: 'shrink_market_v3',
-  SEGMENT: 'shrink_segment_v3'
+  RECORDS: 'shrink_records_v4',
+  MONTHS: 'shrink_months_v4',
+  MARKET: 'shrink_market_v4',
+  SEGMENT: 'shrink_segment_v4'
 };
 
 const humanizeMarketName = (name: string): string => {
@@ -70,15 +71,27 @@ const normalizePeriod = (str: string): string => {
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
   const [isKeyActive, setIsKeyActive] = useState<boolean>(false);
+  const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [showDebug, setShowDebug] = useState(false);
   
-  // Robust check for the injected key
   const checkKey = useCallback(() => {
     const key = window.process?.env?.API_KEY;
-    // Ensure it's not the placeholder or undefined
-    const isValid = !!(key && key.length > 15 && key !== '%%API_KEY_INJECTION%%' && key !== 'undefined');
+    const isValid = !!(key && key.length > 10 && key !== '%%API_KEY_INJECTION%%' && key !== 'undefined' && key !== 'MISSING_IN_WORKER_ENV');
     setIsKeyActive(isValid);
     return isValid;
   }, []);
+
+  const runDiagnostics = async () => {
+    try {
+      const res = await fetch('/api/debug-env');
+      const data = await res.json();
+      setDebugInfo(data);
+      setShowDebug(true);
+    } catch (e) {
+      setDebugInfo({ error: "Could not reach Worker diagnostic endpoint." });
+      setShowDebug(true);
+    }
+  };
 
   useEffect(() => {
     const interval = setInterval(checkKey, 2000);
@@ -146,44 +159,36 @@ const App: React.FC = () => {
     return set;
   }, [records]);
 
+  // Added timelineStats to calculate per-month shrink data for the month selector display
+  const timelineStats = useMemo(() => {
+    const ts: Record<string, { shrink: number; revenue: number }> = {};
+    records.forEach(r => {
+      const norm = normalizePeriod(r.period);
+      if (!ts[norm]) ts[norm] = { shrink: 0, revenue: 0 };
+      const impact = (r.invVariance * (r.unitCost || 0));
+      if (impact < 0) ts[norm].shrink += Math.abs(impact);
+      ts[norm].revenue += r.totalRevenue || 0;
+    });
+    return ts;
+  }, [records]);
+
   const marketOptions = useMemo(() => {
     const names = Array.from(new Set(records.map(r => r.marketName))).filter(Boolean).sort();
     return ['All', ...names];
   }, [records]);
 
-  const isColdFood = useCallback((record: ShrinkRecord) => {
-    const coldPrefixRegex = /^(KF|F\s|B\s)/i;
-    return coldPrefixRegex.test(record.itemNumber) || coldPrefixRegex.test(record.itemName);
-  }, []);
-
-  const timelineStats = useMemo(() => {
-    const stats: Record<string, { shrink: number; overage: number }> = {};
-    records.forEach(r => {
-      const norm = normalizePeriod(r.period);
-      if (!MONTHS.includes(norm)) return;
-      if (!stats[norm]) stats[norm] = { shrink: 0, overage: 0 };
-      const impact = r.invVariance * (r.unitCost || 0);
-      if (impact < 0) stats[norm].shrink += Math.abs(impact);
-      else if (impact > 0) stats[norm].overage += impact;
-    });
-    return stats;
-  }, [records]);
-
-  const filteredRecords = useMemo(() => {
-    return records.filter(r => {
+  const stats = useMemo(() => {
+    const filtered = records.filter(r => {
       const normPeriod = normalizePeriod(r.period);
       if (selectedMonths.size > 0 && !selectedMonths.has(normPeriod)) return false;
       if (selectedMarketFilter !== 'All' && r.marketName !== selectedMarketFilter) return false;
-      if (activeSegment === 'COLD' && !isColdFood(r)) return false;
-      if (activeSegment === 'SODA_SNACK' && isColdFood(r)) return false;
       return true;
     });
-  }, [records, selectedMonths, selectedMarketFilter, activeSegment, isColdFood]);
 
-  const stats = useMemo(() => {
-    if (filteredRecords.length === 0) return { totalShrink: 0, totalRevenue: 0, totalOverage: 0, netVariance: 0, accuracy: 100, shrinkPct: 0, overagePct: 0, netPct: 0, count: 0 };
+    if (filtered.length === 0) return { totalShrink: 0, totalRevenue: 0, totalOverage: 0, netVariance: 0, accuracy: 100, count: 0 };
+    
     let totalShrink = 0, totalRevenue = 0, totalOverage = 0;
-    filteredRecords.forEach(rec => {
+    filtered.forEach(rec => {
       totalRevenue += rec.totalRevenue || 0;
       const impact = rec.invVariance * (rec.unitCost || 0);
       if (impact < 0) totalShrink += Math.abs(impact);
@@ -194,23 +199,23 @@ const App: React.FC = () => {
     return {
       totalShrink, totalRevenue, totalOverage, netVariance,
       accuracy: Number(Math.max(0, accuracy).toFixed(2)),
-      count: filteredRecords.length
+      count: filtered.length
     };
-  }, [filteredRecords]);
+  }, [records, selectedMonths, selectedMarketFilter]);
 
   const handleRunQuickAI = async (customPrompt?: string) => {
     const question = customPrompt || aiUserPrompt;
-    if (!question.trim() || filteredRecords.length === 0 || isQuickAnalyzing) return;
+    if (!question.trim() || records.length === 0 || isQuickAnalyzing) return;
     setIsQuickAnalyzing(true);
     setActiveChip(customPrompt || 'custom');
     setQuickAiText('');
     setAiUserPrompt('');
     setView('ai-insights');
     try {
-      await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
+      await queryMarketAIQuick(records, stats, question, (text) => {
         if (text === "AUTH_REQUIRED") {
           setIsKeyActive(false);
-          setQuickAiText("DIAGNOSTIC ENGINE OFFLINE. Please check Cloudflare Secrets.");
+          setQuickAiText("DIAGNOSTIC ENGINE OFFLINE. Check Worker Secrets.");
         } else {
           setQuickAiText(text);
         }
@@ -228,9 +233,9 @@ const App: React.FC = () => {
       setView('ai-insights');
       return;
     }
-    if (deepDiveStatus === 'analyzing' || filteredRecords.length === 0) return;
+    if (deepDiveStatus === 'analyzing' || records.length === 0) return;
     setDeepDiveStatus('analyzing');
-    queryMarketAIDeep(filteredRecords, stats).then(result => {
+    queryMarketAIDeep(records, stats).then(result => {
       if (result === "AUTH_REQUIRED") {
         setIsKeyActive(false);
         setDeepDiveStatus('idle');
@@ -312,18 +317,35 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {showDebug && (
+        <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-md flex items-center justify-center p-8">
+          <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-3xl p-8 text-slate-300 font-mono text-sm shadow-2xl overflow-hidden flex flex-col">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-white font-bold">Worker Diagnostics</h2>
+              <button onClick={() => setShowDebug(false)} className="text-slate-500 hover:text-white">✕ Close</button>
+            </div>
+            <div className="flex-1 overflow-y-auto bg-black/50 p-6 rounded-xl custom-scrollbar">
+              <pre>{JSON.stringify(debugInfo, null, 2)}</pre>
+            </div>
+            <div className="mt-6 text-xs text-slate-500 leading-relaxed">
+              * If 'has_API_KEY' is false, you must add the Secret 'API_KEY' in your Cloudflare Workers settings and REDEPLOY.
+            </div>
+          </div>
+        </div>
+      )}
+
       <aside className="w-64 bg-slate-900 text-slate-300 border-r border-slate-800 flex flex-col shrink-0 z-20 shadow-2xl">
         <div className="p-8">
           <h1 className="text-xl font-bold text-white flex items-center gap-3">
             <div className="w-10 h-10 bg-indigo-500 rounded-xl flex items-center justify-center text-white font-black shadow-lg">S</div>
-            The Shrink Shrink
+            Shrink Shrink
           </h1>
           <div className="mt-8 space-y-2">
             {!isKeyActive ? (
-              <div className="w-full px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest">
+              <button onClick={runDiagnostics} className="w-full px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest text-left">
                 <div className="flex items-center gap-2 mb-1"><Icons.Alert /> ENGINE OFFLINE</div>
-                <div className="text-[7px] leading-tight opacity-70">Add 'API_KEY' to Cloudflare Secrets & Redeploy</div>
-              </div>
+                <div className="text-[7px] leading-tight opacity-70">Click for System Diagnosis</div>
+              </button>
             ) : (
               <div className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Diagnostic Engine Active
@@ -337,6 +359,9 @@ const App: React.FC = () => {
           <button onClick={() => setView('dashboard')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${view === 'dashboard' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20' : 'hover:bg-slate-800/50 disabled:opacity-20'}`}><Icons.Dashboard /> Performance</button>
           <button onClick={() => setView('ai-insights')} disabled={records.length === 0} className={`w-full flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${view === 'ai-insights' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20' : 'hover:bg-slate-800/50 disabled:opacity-20'}`}><Icons.AI /> AI Diagnosis</button>
         </nav>
+        <div className="p-4 border-t border-slate-800">
+          <button onClick={runDiagnostics} className="text-[8px] uppercase tracking-widest font-black text-slate-600 hover:text-indigo-400 transition-colors">Developer Diagnostics</button>
+        </div>
       </aside>
 
       <main className="flex-1 overflow-y-auto bg-[#F8FAFC] custom-scrollbar">
@@ -397,7 +422,12 @@ const App: React.FC = () => {
                     <p className="text-5xl font-black text-slate-900 tracking-tighter">{stats.accuracy}%</p>
                  </div>
               </div>
-              <AnalysisCharts data={filteredRecords} />
+              <AnalysisCharts data={records.filter(r => {
+                const normPeriod = normalizePeriod(r.period);
+                if (selectedMonths.size > 0 && !selectedMonths.has(normPeriod)) return false;
+                if (selectedMarketFilter !== 'All' && r.marketName !== selectedMarketFilter) return false;
+                return true;
+              })} />
             </div>
           )}
 
