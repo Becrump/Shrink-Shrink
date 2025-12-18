@@ -13,6 +13,11 @@ declare global {
   }
   interface Window {
     aistudio?: AIStudio;
+    process: {
+      env: {
+        API_KEY?: string;
+      }
+    }
   }
 }
 
@@ -70,7 +75,17 @@ const normalizePeriod = (str: string): string => {
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
-  const [hasApiKey, setHasApiKey] = useState<boolean>(true);
+  
+  // Safely check for API key presence
+  const getInitialApiKeyStatus = () => {
+    try {
+      return !!(window.process?.env?.API_KEY);
+    } catch {
+      return false;
+    }
+  };
+
+  const [hasApiKey, setHasApiKey] = useState<boolean>(getInitialApiKeyStatus);
   
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
@@ -120,7 +135,9 @@ const App: React.FC = () => {
     const checkKey = async () => {
       if (window.aistudio) {
         const selected = await window.aistudio.hasSelectedApiKey();
-        setHasApiKey(selected);
+        setHasApiKey(selected || !!window.process?.env?.API_KEY);
+      } else {
+        setHasApiKey(!!window.process?.env?.API_KEY);
       }
     };
     checkKey();
@@ -129,7 +146,10 @@ const App: React.FC = () => {
   const handleSelectKey = async () => {
     if (window.aistudio) {
       await window.aistudio.openSelectKey();
+      // Assume success as per platform requirements
       setHasApiKey(true);
+    } else {
+      alert("Please ensure the API_KEY environment variable is set in your Cloudflare project settings.");
     }
   };
 
@@ -220,7 +240,7 @@ const App: React.FC = () => {
   }, [filteredRecords]);
 
   const handleRunQuickAI = async (customPrompt?: string) => {
-    if (!hasApiKey) return handleSelectKey();
+    if (!hasApiKey && !window.process?.env?.API_KEY) return handleSelectKey();
     const question = customPrompt || aiUserPrompt;
     if (!question.trim() || filteredRecords.length === 0 || isQuickAnalyzing) return;
     
@@ -239,7 +259,7 @@ const App: React.FC = () => {
   };
 
   const startDeepDive = async () => {
-    if (!hasApiKey) return handleSelectKey();
+    if (!hasApiKey && !window.process?.env?.API_KEY) return handleSelectKey();
     if (deepDiveStatus === 'ready') {
       setQuickAiText(deepDiveResult);
       setDeepDiveStatus('idle');
@@ -252,6 +272,7 @@ const App: React.FC = () => {
       if (result === "RESELECT_KEY") {
         setHasApiKey(false);
         setDeepDiveStatus('idle');
+        handleSelectKey();
         return;
       }
       setDeepDiveResult(result);
@@ -406,7 +427,7 @@ const App: React.FC = () => {
             The Shrink Shrink
           </h1>
           <div className="mt-8 space-y-2">
-            {!hasApiKey ? (
+            {(!hasApiKey && !window.process?.env?.API_KEY) ? (
               <button onClick={handleSelectKey} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">Connect AI Hub</button>
             ) : (
               <div className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">

@@ -2,6 +2,15 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ShrinkRecord } from "../types";
 
+const validateKey = () => {
+  // Use a safe check to see if the key is available on window.process.env
+  const key = window.process?.env?.API_KEY;
+  if (!key || key.trim() === "") {
+    throw new Error("MISSING_API_KEY");
+  }
+  return key;
+};
+
 const isColdFoodManual = (name: string, code: string) => {
   const coldPrefixRegex = /^(KF|F\s|B\s)/i;
   return coldPrefixRegex.test(code) || coldPrefixRegex.test(name);
@@ -56,28 +65,29 @@ export const queryMarketAIQuick = async (
   userQuestion: string,
   onChunk: (text: string) => void
 ) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const { marketNames, outliers } = getAggregates(records);
-
-  const prompt = `
-    ROLE: Senior Forensic Inventory Auditor.
-    ${OPERATIONAL_CONTEXT}
-    
-    DATA CONTEXT:
-    - Stats: Rev $${summaryStats.totalRevenue.toLocaleString()}, Shrink $${summaryStats.totalShrink.toLocaleString()}, Overage $${summaryStats.totalOverage.toLocaleString()}.
-    - Markets: ${marketNames.join(", ")}
-    - Top Variances: ${JSON.stringify(outliers.slice(0, 20))}
-    
-    USER QUESTION: "${userQuestion}"
-    
-    STRICT RESPONSE GUIDELINES:
-    1. EXPLICITLY look for naming confusion (similar names, opposite variances).
-    2. Example: Flag if "Pepperoni Pizza" has a gain while "Pep Pizza" has a loss.
-    3. Focus on "Missed Adds" for Cold Food (KF/F/B) overages.
-    4. Use clinical, bulleted Markdown.
-  `;
-
   try {
+    const apiKey = validateKey();
+    const ai = new GoogleGenAI({ apiKey });
+    const { marketNames, outliers } = getAggregates(records);
+
+    const prompt = `
+      ROLE: Senior Forensic Inventory Auditor.
+      ${OPERATIONAL_CONTEXT}
+      
+      DATA CONTEXT:
+      - Stats: Rev $${summaryStats.totalRevenue.toLocaleString()}, Shrink $${summaryStats.totalShrink.toLocaleString()}, Overage $${summaryStats.totalOverage.toLocaleString()}.
+      - Markets: ${marketNames.join(", ")}
+      - Top Variances: ${JSON.stringify(outliers.slice(0, 20))}
+      
+      USER QUESTION: "${userQuestion}"
+      
+      STRICT RESPONSE GUIDELINES:
+      1. EXPLICITLY look for naming confusion (similar names, opposite variances).
+      2. Example: Flag if "Pepperoni Pizza" has a gain while "Pep Pizza" has a loss.
+      3. Focus on "Missed Adds" for Cold Food (KF/F/B) overages.
+      4. Use clinical, bulleted Markdown.
+    `;
+
     const responseStream = await ai.models.generateContentStream({
       model: "gemini-3-flash-preview",
       contents: prompt
@@ -90,8 +100,12 @@ export const queryMarketAIQuick = async (
         onChunk(fullText);
       }
     }
-  } catch (error) {
-    onChunk("Diagnosis failed. Check forensic engine connection.");
+  } catch (error: any) {
+    if (error.message === "MISSING_API_KEY") {
+      onChunk("Forensic Key Missing. Please click 'Connect AI Hub' in the sidebar.");
+    } else {
+      onChunk("Diagnosis failed. Check forensic engine connection.");
+    }
   }
 };
 
@@ -99,28 +113,29 @@ export const queryMarketAIDeep = async (
   records: ShrinkRecord[], 
   summaryStats: any
 ): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const { monthlyAgg, outliers, marketNames } = getAggregates(records);
-
-  const prompt = `
-    ROLE: "The Shrink Shrink" - Chief Forensic Inventory Partner.
-    ${OPERATIONAL_CONTEXT}
-    
-    VITALS: 
-    - Revenue: $${summaryStats.totalRevenue.toLocaleString()}
-    - Shrink: $${summaryStats.totalShrink.toLocaleString()}
-    - Integrity: ${summaryStats.accuracy}%
-    
-    AUDIT REPORT SECTIONS:
-    1. OPERATIONAL HEALTH: Receiving discipline trends.
-    2. NAMING FORENSICS: Identify paired item errors (e.g., "Cheeseburger" vs "Classic Cheeseburger"). List specific matches.
-    3. COLD FOOD DISCREPANCIES: UPC scan data vs missed manual tablet entry.
-    4. ACTIONABLE REMEDIES: 5 steps to fix naming confusion and tablet compliance.
-    
-    DATA: ${JSON.stringify(outliers)}
-  `;
-
   try {
+    const apiKey = validateKey();
+    const ai = new GoogleGenAI({ apiKey });
+    const { outliers } = getAggregates(records);
+
+    const prompt = `
+      ROLE: "The Shrink Shrink" - Chief Forensic Inventory Partner.
+      ${OPERATIONAL_CONTEXT}
+      
+      VITALS: 
+      - Revenue: $${summaryStats.totalRevenue.toLocaleString()}
+      - Shrink: $${summaryStats.totalShrink.toLocaleString()}
+      - Integrity: ${summaryStats.accuracy}%
+      
+      AUDIT REPORT SECTIONS:
+      1. OPERATIONAL HEALTH: Receiving discipline trends.
+      2. NAMING FORENSICS: Identify paired item errors (e.g., "Cheeseburger" vs "Classic Cheeseburger"). List specific matches.
+      3. COLD FOOD DISCREPANCIES: UPC scan data vs missed manual tablet entry.
+      4. ACTIONABLE REMEDIES: 5 steps to fix naming confusion and tablet compliance.
+      
+      DATA: ${JSON.stringify(outliers)}
+    `;
+
     const response = await ai.models.generateContent({
       model: "gemini-3-pro-preview",
       contents: prompt,
@@ -130,7 +145,7 @@ export const queryMarketAIDeep = async (
     });
     return response.text || "Diagnostic report generation failed.";
   } catch (error: any) {
-    if (error?.message?.includes("entity was not found")) {
+    if (error.message === "MISSING_API_KEY" || error?.message?.includes("entity was not found")) {
       return "RESELECT_KEY";
     }
     return "Forensic connection failed. Re-verify API credentials.";
@@ -138,10 +153,11 @@ export const queryMarketAIDeep = async (
 };
 
 export const parseRawReportText = async (rawText: string): Promise<{ records: Partial<ShrinkRecord>[], detectedPeriod: string, detectedMarket: string }> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = `Extract inventory data from this text. Focus on identifying the human-readable Market Name, the Reporting Period, and the itemized variances. Return valid JSON.\n\nTEXT:\n${rawText.slice(0, 15000)}`;
-
   try {
+    const apiKey = validateKey();
+    const ai = new GoogleGenAI({ apiKey });
+    const prompt = `Extract inventory data from this text. Focus on identifying the human-readable Market Name, the Reporting Period, and the itemized variances. Return valid JSON.\n\nTEXT:\n${rawText.slice(0, 15000)}`;
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,

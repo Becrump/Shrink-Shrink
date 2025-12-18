@@ -6,7 +6,6 @@ export interface Env {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
     const response = await env.ASSETS.fetch(request);
 
     // Only inject into HTML files (primarily index.html)
@@ -14,18 +13,20 @@ export default {
     if (contentType && contentType.includes("text/html")) {
       let html = await response.text();
       
-      // We inject a script to define process.env globally in the browser
-      // This allows the frontend code to use `process.env.API_KEY` as requested.
+      // Defining process on globalThis ensures maximum compatibility with 
+      // various module loaders and SDKs that expect a Node-like environment.
       const injection = `
         <script>
-          window.process = window.process || {};
-          window.process.env = window.process.env || {};
-          window.process.env.API_KEY = ${JSON.stringify(env.API_KEY || "")};
+          (function() {
+            const env = { API_KEY: ${JSON.stringify(env.API_KEY || "")} };
+            globalThis.process = globalThis.process || {};
+            globalThis.process.env = Object.assign(globalThis.process.env || {}, env);
+          })();
         </script>
       `;
       
-      // Insert the injection before the first script or at the end of head
-      html = html.replace("</head>", `${injection}</head>`);
+      // Insert right after <head> to be available for the importmap and module scripts
+      html = html.replace("<head>", `<head>${injection}`);
       
       return new Response(html, {
         headers: response.headers
