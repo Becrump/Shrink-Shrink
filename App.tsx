@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { ShrinkRecord, ViewType, DeepDiveStatus } from './types';
 import { Icons } from './constants';
@@ -7,12 +6,7 @@ import { queryMarketAIQuick, queryMarketAIDeep } from './services/geminiService'
 import * as XLSX from 'xlsx';
 
 declare global {
-  interface AIStudio {
-    hasSelectedApiKey: () => Promise<boolean>;
-    openSelectKey: () => Promise<void>;
-  }
   interface Window {
-    aistudio?: AIStudio;
     process: {
       env: {
         API_KEY?: string;
@@ -44,10 +38,10 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 const STORAGE_KEYS = {
-  RECORDS: 'shrink_guard_records_v25',
-  MONTHS: 'shrink_guard_months_v25',
-  MARKET: 'shrink_guard_market_v25',
-  SEGMENT: 'shrink_guard_segment_v25'
+  RECORDS: 'shrink_records_v3',
+  MONTHS: 'shrink_months_v3',
+  MARKET: 'shrink_market_v3',
+  SEGMENT: 'shrink_segment_v3'
 };
 
 const humanizeMarketName = (name: string): string => {
@@ -75,17 +69,22 @@ const normalizePeriod = (str: string): string => {
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
-  const [hasApiKey, setHasApiKey] = useState<boolean>(true);
+  const [isKeyActive, setIsKeyActive] = useState<boolean>(false);
   
-  const checkGlobalKey = useCallback(() => {
-    try {
-      // Check window.process first as it's our target for injection
-      const key = window.process?.env?.API_KEY || (globalThis as any).process?.env?.API_KEY;
-      return !!(key && key.trim().length > 10 && key !== 'undefined' && key !== 'null');
-    } catch {
-      return false;
-    }
+  // Robust check for the injected key
+  const checkKey = useCallback(() => {
+    const key = window.process?.env?.API_KEY;
+    // Ensure it's not the placeholder or undefined
+    const isValid = !!(key && key.length > 15 && key !== '%%API_KEY_INJECTION%%' && key !== 'undefined');
+    setIsKeyActive(isValid);
+    return isValid;
   }, []);
+
+  useEffect(() => {
+    const interval = setInterval(checkKey, 2000);
+    checkKey();
+    return () => clearInterval(interval);
+  }, [checkKey]);
 
   const [records, setRecords] = useState<ShrinkRecord[]>(() => {
     try {
@@ -126,33 +125,8 @@ const App: React.FC = () => {
       localStorage.setItem(STORAGE_KEYS.MONTHS, JSON.stringify(Array.from(selectedMonths)));
       localStorage.setItem(STORAGE_KEYS.MARKET, selectedMarketFilter);
       localStorage.setItem(STORAGE_KEYS.SEGMENT, activeSegment);
-    } catch (e) {
-      console.warn("Storage quota limit reached.");
-    }
+    } catch (e) { console.warn("Storage quota limit reached."); }
   }, [records, selectedMonths, selectedMarketFilter, activeSegment]);
-
-  const handleSelectKey = async () => {
-    if (window.aistudio) {
-      await window.aistudio.openSelectKey();
-      setHasApiKey(true);
-    } else {
-      alert("DIAGNOSTIC ENGINE OFFLINE\n\nIf you have added the 'API_KEY' Secret in Cloudflare:\n1. Go to the 'Deployments' tab.\n2. Click the three dots on your latest deployment.\n3. Select 'Retry deployment'.\n\nThis ensures the Worker re-reads the new Secret.");
-    }
-  };
-
-  useEffect(() => {
-    const checkKey = async () => {
-      if (window.aistudio) {
-        const selected = await window.aistudio.hasSelectedApiKey();
-        setHasApiKey(selected || checkGlobalKey());
-      } else {
-        setHasApiKey(checkGlobalKey());
-      }
-    };
-    const interval = setInterval(checkKey, 2000);
-    checkKey();
-    return () => clearInterval(interval);
-  }, [checkGlobalKey]);
 
   const purgeLedger = () => {
     if (window.confirm("Purge historical forensic data?")) {
@@ -208,34 +182,18 @@ const App: React.FC = () => {
 
   const stats = useMemo(() => {
     if (filteredRecords.length === 0) return { totalShrink: 0, totalRevenue: 0, totalOverage: 0, netVariance: 0, accuracy: 100, shrinkPct: 0, overagePct: 0, netPct: 0, count: 0 };
-    
     let totalShrink = 0, totalRevenue = 0, totalOverage = 0;
-    
     filteredRecords.forEach(rec => {
       totalRevenue += rec.totalRevenue || 0;
       const impact = rec.invVariance * (rec.unitCost || 0);
-      if (impact < 0) {
-        totalShrink += Math.abs(impact);
-      } else if (impact > 0) {
-        totalOverage += impact;
-      }
+      if (impact < 0) totalShrink += Math.abs(impact);
+      else if (impact > 0) totalOverage += impact;
     });
-
     const netVariance = totalOverage - totalShrink;
     const accuracy = totalRevenue > 0 ? (1 - (totalShrink / totalRevenue)) * 100 : 100;
-    const shrinkPct = totalRevenue > 0 ? (totalShrink / totalRevenue) * 100 : 0;
-    const overagePct = totalRevenue > 0 ? (totalOverage / totalRevenue) * 100 : 0;
-    const netPct = totalRevenue > 0 ? (netVariance / totalRevenue) * 100 : 0;
-
     return {
-      totalShrink, 
-      totalRevenue, 
-      totalOverage, 
-      netVariance,
+      totalShrink, totalRevenue, totalOverage, netVariance,
       accuracy: Number(Math.max(0, accuracy).toFixed(2)),
-      shrinkPct: Number(shrinkPct.toFixed(2)),
-      overagePct: Number(overagePct.toFixed(2)),
-      netPct: Number(netPct.toFixed(2)),
       count: filteredRecords.length
     };
   }, [filteredRecords]);
@@ -243,19 +201,16 @@ const App: React.FC = () => {
   const handleRunQuickAI = async (customPrompt?: string) => {
     const question = customPrompt || aiUserPrompt;
     if (!question.trim() || filteredRecords.length === 0 || isQuickAnalyzing) return;
-    
     setIsQuickAnalyzing(true);
     setActiveChip(customPrompt || 'custom');
     setQuickAiText('');
     setAiUserPrompt('');
     setView('ai-insights');
-    
     try {
       await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
         if (text === "AUTH_REQUIRED") {
-          setQuickAiText("");
-          setHasApiKey(false);
-          handleSelectKey();
+          setIsKeyActive(false);
+          setQuickAiText("DIAGNOSTIC ENGINE OFFLINE. Please check Cloudflare Secrets.");
         } else {
           setQuickAiText(text);
         }
@@ -277,9 +232,8 @@ const App: React.FC = () => {
     setDeepDiveStatus('analyzing');
     queryMarketAIDeep(filteredRecords, stats).then(result => {
       if (result === "AUTH_REQUIRED") {
-        setHasApiKey(false);
+        setIsKeyActive(false);
         setDeepDiveStatus('idle');
-        handleSelectKey();
         return;
       }
       setDeepDiveResult(result);
@@ -297,119 +251,63 @@ const App: React.FC = () => {
         const workbook = XLSX.read(data, { type: 'array' });
         let allExtractedRecords: any[] = [];
         let humanMarketNames: string[] = [];
-        
-        workbook.SheetNames.forEach((sheetName, sIdx) => {
-          try {
-            setProcessingStatus(`Auditing POS ${sIdx + 1}/${workbook.SheetNames.length}...`);
-            const worksheet = workbook.Sheets[sheetName];
-            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-            if (!jsonData || jsonData.length < 5) return;
-
-            const locationVal = (jsonData[2] as any[])?.[0] || '';
-            const marketVal = (jsonData[3] as any[])?.[0] || '';
-            const hLocation = humanizeMarketName(String(locationVal));
-            const hMarket = humanizeMarketName(String(marketVal));
-            let cleanName = (hLocation && hMarket && hLocation !== hMarket) ? `${hLocation} - ${hMarket}` : (hMarket || hLocation || humanizeMarketName(sheetName));
-            if (!humanMarketNames.includes(cleanName)) humanMarketNames.push(cleanName);
-
-            let colMap = { itemNum: 0, itemName: 1, variance: 2, revenue: 3, soldQty: 4, salePrice: 5, itemCost: 7 };
-            let headerRowIndex = -1;
-            
-            for (let i = 0; i < Math.min(jsonData.length, 50); i++) {
-              const row = jsonData[i] as any[];
-              if (!row || !Array.isArray(row)) continue;
-              const rowStr = row.join('|').toLowerCase();
-              if (rowStr.includes('variance') || rowStr.includes('revenue') || rowStr.includes('cost')) {
-                headerRowIndex = i;
-                row.forEach((cell, idx) => {
-                  const s = String(cell || '').toLowerCase().trim();
-                  if (!s) return;
-                  if (s === 'item code' || s === 'item number' || s === 'item no') colMap.itemNum = idx;
-                  else if (s === 'item' || s === 'item name' || s === 'description') colMap.itemName = idx;
-                  else if (s === 'inv variance' || s === 'inventory variance') colMap.variance = idx;
-                  else if (s === 'total revenue' || s === 'revenue' || s === 'sales') colMap.revenue = idx;
-                  else if (s === 'sold qty' || s === 'qty sold' || s === 'units sold') colMap.soldQty = idx;
-                  else if (s === 'sale price' || s === 'price') colMap.salePrice = idx;
-                  else if (s === 'item cost' || s === 'unit cost' || s === 'cost') colMap.itemCost = idx;
-                });
-                break;
-              }
-            }
-            if (headerRowIndex === -1) return;
-
-            const dataRows = jsonData.filter((r: any, idx) => 
-              idx > headerRowIndex && Array.isArray(r) && r.length > 3 && (parseFloat(String(r[colMap.itemNum])) || parseFloat(String(r[colMap.variance])))
-            );
-            
-            dataRows.forEach((row: any) => {
-              const itemLabel = String(row[colMap.itemName] || '').toLowerCase();
-              if (itemLabel.includes('total') || itemLabel.includes('summary')) return;
-
-              const invVar = parseFloat(row[colMap.variance]) || 0;
-              if (Math.abs(invVar) < 0.001) return;
-
-              const cost = parseFloat(row[colMap.itemCost]) || 0;
-              const revenue = parseFloat(row[colMap.revenue]) || 0;
-              const impact = invVar * cost;
-              
-              allExtractedRecords.push({
-                itemNumber: String(row[colMap.itemNum] || ''),
-                itemName: String(row[colMap.itemName] || ''),
-                invVariance: invVar,
-                totalRevenue: revenue,
-                shrinkLoss: invVar < 0 ? Math.abs(impact) : 0,
-                unitCost: cost,
-                marketName: cleanName,
-                period: targetedMonth || 'Current'
+        workbook.SheetNames.forEach((sheetName) => {
+          const worksheet = workbook.Sheets[sheetName];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+          if (!jsonData || jsonData.length < 5) return;
+          const locationVal = (jsonData[2] as any[])?.[0] || '';
+          const marketVal = (jsonData[3] as any[])?.[0] || '';
+          const cleanName = humanizeMarketName(String(marketVal || locationVal || sheetName));
+          if (!humanMarketNames.includes(cleanName)) humanMarketNames.push(cleanName);
+          let colMap = { itemNum: 0, itemName: 1, variance: 2, revenue: 3, soldQty: 4, salePrice: 5, itemCost: 7 };
+          let headerRowIndex = -1;
+          for (let i = 0; i < Math.min(jsonData.length, 50); i++) {
+            const row = jsonData[i] as any[];
+            if (!row) continue;
+            const rowStr = row.join('|').toLowerCase();
+            if (rowStr.includes('variance') || rowStr.includes('revenue')) {
+              headerRowIndex = i;
+              row.forEach((cell, idx) => {
+                const s = String(cell || '').toLowerCase().trim();
+                if (s.includes('number') || s.includes('code')) colMap.itemNum = idx;
+                else if (s === 'item' || s === 'description') colMap.itemName = idx;
+                else if (s.includes('variance')) colMap.variance = idx;
+                else if (s.includes('revenue')) colMap.revenue = idx;
+                else if (s.includes('cost')) colMap.itemCost = idx;
               });
+              break;
+            }
+          }
+          if (headerRowIndex === -1) return;
+          jsonData.slice(headerRowIndex + 1).forEach((row: any) => {
+            const invVar = parseFloat(row[colMap.variance]) || 0;
+            if (Math.abs(invVar) < 0.001) return;
+            const cost = parseFloat(row[colMap.itemCost]) || 0;
+            allExtractedRecords.push({
+              itemNumber: String(row[colMap.itemNum] || ''),
+              itemName: String(row[colMap.itemName] || ''),
+              invVariance: invVar,
+              totalRevenue: parseFloat(row[colMap.revenue]) || 0,
+              shrinkLoss: invVar < 0 ? Math.abs(invVar * cost) : 0,
+              unitCost: cost,
+              marketName: cleanName,
+              period: targetedMonth || 'Current'
             });
-          } catch (sheetErr) { console.warn(`POS forensic error:`, sheetErr); }
+          });
         });
-        
-        if (allExtractedRecords.length === 0) {
-          alert("Baseline matches perfectly. No forensic variances detected.");
-          setIsProcessing(false);
-          return;
-        }
-
         setImportStaging({ records: allExtractedRecords, marketNames: humanMarketNames, period: targetedMonth || 'Current', detectedColumns: [] });
-        setIsProcessing(false);
-      } catch (err) { setIsProcessing(false); }
+      } finally { setIsProcessing(false); }
     };
     reader.readAsArrayBuffer(file);
-  };
-
-  const commitImport = () => {
-    if (!importStaging) return;
-    const newRecords = importStaging.records.map((r, i) => ({ ...r, id: `imp-${i}-${Date.now()}` } as ShrinkRecord));
-    setRecords(prev => [...prev.filter(r => normalizePeriod(r.period) !== importStaging.period), ...newRecords]);
-    setSelectedMonths(prev => new Set(prev).add(normalizePeriod(importStaging.period)));
-    setImportStaging(null);
-    setView('dashboard');
-  };
-
-  const toggleMonth = (m: string) => {
-    setSelectedMonths(prev => {
-      const n = new Set(prev);
-      if (n.has(m)) n.delete(m);
-      else n.add(m);
-      return n;
-    });
   };
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans text-slate-900">
       {isProcessing && (
         <div className="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-xl flex items-center justify-center animate-in fade-in duration-300">
-           <div className="bg-white p-12 rounded-[4rem] shadow-2xl flex flex-col items-center gap-8 border border-slate-200 max-w-sm w-full text-center">
-              <div className="relative">
-                <div className="w-24 h-24 border-4 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin" />
-                <div className="absolute inset-0 flex items-center justify-center text-indigo-600 drop-shadow-sm"><Icons.AI /></div>
-              </div>
-              <div>
-                 <h3 className="text-2xl font-black text-slate-900 uppercase tracking-tighter">Forensic Sync</h3>
-                 <p className="text-slate-500 font-bold text-[10px] uppercase tracking-widest mt-2">{processingStatus}</p>
-              </div>
+           <div className="bg-white p-12 rounded-[4rem] shadow-2xl flex flex-col items-center gap-8 border border-slate-200">
+              <div className="w-24 h-24 border-4 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin" />
+              <p className="text-slate-500 font-bold text-[10px] uppercase tracking-widest">{processingStatus}</p>
            </div>
         </div>
       )}
@@ -421,10 +319,11 @@ const App: React.FC = () => {
             The Shrink Shrink
           </h1>
           <div className="mt-8 space-y-2">
-            {!hasApiKey ? (
-              <button onClick={handleSelectKey} className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest animate-pulse">
-                <Icons.Alert /> Engine Offline - Connect
-              </button>
+            {!isKeyActive ? (
+              <div className="w-full px-3 py-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-[9px] font-black uppercase tracking-widest">
+                <div className="flex items-center gap-2 mb-1"><Icons.Alert /> ENGINE OFFLINE</div>
+                <div className="text-[7px] leading-tight opacity-70">Add 'API_KEY' to Cloudflare Secrets & Redeploy</div>
+              </div>
             ) : (
               <div className="w-full flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-[9px] font-black uppercase tracking-widest">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Diagnostic Engine Active
@@ -445,21 +344,16 @@ const App: React.FC = () => {
           <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/90 backdrop-blur-xl">
             <div className="bg-white w-full max-w-xl rounded-[4rem] shadow-2xl p-12 border border-slate-200">
                <h3 className="text-3xl font-black mb-6 tracking-tighter">Audit Required</h3>
-               <div className="bg-slate-50 p-8 rounded-[2.5rem] mb-8 border border-slate-100 max-h-64 overflow-y-auto custom-scrollbar">
-                  <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Market Forensic Sync:</p>
-                  <div className="flex flex-col gap-2.5">
-                    {importStaging.marketNames.map((name, idx) => (
-                      <div key={idx} className="bg-white border border-slate-200 px-5 py-4 rounded-2xl text-[11px] font-black text-indigo-700 shadow-sm flex items-center justify-between group hover:border-indigo-400 transition-all">
-                        <span className="truncate pr-4">{name}</span>
-                        <div className="w-6 h-6 bg-indigo-50 rounded-full flex items-center justify-center text-[10px] text-indigo-500">✓</div>
-                      </div>
-                    ))}
-                  </div>
-               </div>
-               <p className="text-slate-500 mb-10 text-sm font-medium leading-relaxed">Identifying <span className="font-black text-indigo-600">{importStaging.records.length} forensic variances</span>.</p>
+               <p className="text-slate-500 mb-10 text-sm font-medium leading-relaxed">Found <span className="font-black text-indigo-600">{importStaging.records.length} forensic variances</span> across {importStaging.marketNames.length} markets.</p>
                <div className="flex gap-4">
-                  <button onClick={() => setImportStaging(null)} className="flex-1 py-5 font-black text-slate-400 uppercase tracking-widest text-[10px] hover:text-red-500 transition-colors">Discard</button>
-                  <button onClick={commitImport} className="flex-[2] bg-indigo-600 text-white py-5 rounded-3xl font-black shadow-2xl shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all uppercase tracking-widest text-xs">Commit To History</button>
+                  <button onClick={() => setImportStaging(null)} className="flex-1 py-5 font-black text-slate-400 uppercase tracking-widest text-[10px]">Discard</button>
+                  <button onClick={() => {
+                    const newRecords = importStaging.records.map((r, i) => ({ ...r, id: `imp-${i}-${Date.now()}` } as ShrinkRecord));
+                    setRecords(prev => [...prev.filter(r => normalizePeriod(r.period) !== importStaging.period), ...newRecords]);
+                    setSelectedMonths(prev => new Set(prev).add(normalizePeriod(importStaging.period)));
+                    setImportStaging(null);
+                    setView('dashboard');
+                  }} className="flex-[2] bg-indigo-600 text-white py-5 rounded-3xl font-black shadow-2xl shadow-indigo-200 hover:bg-indigo-700 transition-all uppercase tracking-widest text-xs">Commit To History</button>
                </div>
             </div>
           </div>
@@ -472,28 +366,18 @@ const App: React.FC = () => {
               const isSelected = selectedMonths.has(m);
               const mStats = timelineStats[m];
               return (
-                <div key={m} onClick={() => isPopulated ? toggleMonth(m) : (setActiveUploadMonth(m), fileInputRef.current?.click())} 
+                <div key={m} onClick={() => isPopulated ? setSelectedMonths(prev => { const n = new Set(prev); if (n.has(m)) n.delete(m); else n.add(m); return n; }) : (setActiveUploadMonth(m), fileInputRef.current?.click())} 
                      className={`flex-shrink-0 w-44 h-60 rounded-[3rem] border-2 flex flex-col items-center justify-between p-6 cursor-pointer transition-all duration-300 group ${isSelected ? 'bg-white border-indigo-500 shadow-2xl scale-105 z-10' : isPopulated ? 'bg-white border-slate-100 hover:border-indigo-200 shadow-xl' : 'bg-slate-100 border-dashed border-slate-300 opacity-60 hover:opacity-100'}`}>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 group-hover:text-indigo-500 transition-colors">{m}</span>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{m}</span>
                   {isPopulated ? (
-                    <>
-                      <div className={`w-12 h-12 rounded-[1.25rem] flex items-center justify-center transition-all ${isSelected ? 'bg-indigo-600 text-white shadow-xl rotate-6' : 'bg-slate-100 text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-500'}`}><Icons.Markets /></div>
-                      <div className="w-full space-y-2 pt-2 border-t border-slate-50">
+                    <div className="w-full space-y-2 pt-2 border-t border-slate-50">
                         <div className="flex justify-between items-center text-[9px] font-black">
-                          <span className="text-slate-400 uppercase tracking-tighter">Loss</span>
+                          <span className="text-slate-400 uppercase">Loss</span>
                           <span className="text-red-500">-${Math.round(mStats?.shrink || 0).toLocaleString()}</span>
                         </div>
-                        <div className="flex justify-between items-center text-[9px] font-black">
-                          <span className="text-slate-400 uppercase tracking-tighter">Gain</span>
-                          <span className="text-emerald-500">+${Math.round(mStats?.overage || 0).toLocaleString()}</span>
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex-1 flex flex-col items-center justify-center text-slate-400 gap-4 opacity-40 group-hover:opacity-100 transition-all">
-                      <div className="w-12 h-12 bg-slate-200 rounded-full flex items-center justify-center group-hover:bg-indigo-100 group-hover:text-indigo-500 transition-all"><Icons.Upload /></div>
-                      <span className="text-[8px] font-black uppercase tracking-widest">New Slot</span>
                     </div>
+                  ) : (
+                    <div className="w-12 h-12 bg-slate-200 rounded-full flex items-center justify-center"><Icons.Upload /></div>
                   )}
                 </div>
               );
@@ -503,39 +387,13 @@ const App: React.FC = () => {
 
           {view === 'dashboard' && records.length > 0 && (
             <div className="animate-in fade-in slide-in-from-bottom-5 duration-700">
-              <div className="flex flex-wrap items-center justify-between gap-8 mb-12 bg-white p-8 rounded-[3rem] border border-slate-200 shadow-sm">
-                 <div className="flex items-center gap-8">
-                    <div className="flex bg-slate-50 p-2 rounded-[1.5rem] border border-slate-100 shadow-inner">
-                       {(['ALL', 'SODA_SNACK', 'COLD'] as SegmentFilter[]).map(seg => (
-                         <button key={seg} onClick={() => setActiveSegment(seg)} className={`px-8 py-3.5 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeSegment === seg ? 'bg-white text-indigo-600 shadow-xl border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}>
-                           {seg === 'ALL' ? 'Everything' : seg === 'SODA_SNACK' ? 'Snacks & Drinks' : 'Fresh Food'}
-                         </button>
-                       ))}
-                    </div>
-                    <select value={selectedMarketFilter} onChange={(e) => setSelectedMarketFilter(e.target.value)} className="bg-slate-50 border border-slate-100 rounded-2xl px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-600 min-w-[340px] shadow-sm appearance-none cursor-pointer">
-                       <option value="All">All Filtered Locations</option>
-                       {marketOptions.filter(m => m !== 'All').map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                    </select>
-                 </div>
-              </div>
-
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mb-16">
-                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
-                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Shrink (Cost)</p>
-                    <p className="text-5xl font-black text-red-500 tracking-tighter">-${stats.totalShrink.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100">
+                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Shrink</p>
+                    <p className="text-5xl font-black text-red-500 tracking-tighter">-${stats.totalShrink.toLocaleString()}</p>
                  </div>
-                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
-                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Overage (Cost)</p>
-                    <p className="text-5xl font-black text-emerald-600 tracking-tighter">+${stats.totalOverage.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
-                 </div>
-                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
-                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Net Outcome</p>
-                    <p className={`text-5xl font-black tracking-tighter ${stats.netVariance >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                       {stats.netVariance >= 0 ? '+' : ''}${Math.round(stats.netVariance).toLocaleString()}
-                    </p>
-                 </div>
-                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 group transition-all hover:shadow-2xl hover:-translate-y-1">
-                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Forensic Integrity</p>
+                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100">
+                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Integrity</p>
                     <p className="text-5xl font-black text-slate-900 tracking-tighter">{stats.accuracy}%</p>
                  </div>
               </div>
@@ -548,92 +406,37 @@ const App: React.FC = () => {
               <div className="bg-white rounded-[5rem] shadow-2xl overflow-hidden min-h-[850px] flex flex-col border border-slate-200">
                 <div className="bg-slate-900 p-16 text-white flex items-center justify-between">
                   <div className="flex items-center gap-8">
-                    <div className="w-16 h-16 bg-indigo-50 rounded-[2rem] flex items-center justify-center text-white shadow-2xl shadow-indigo-500/50"><Icons.AI /></div>
-                    <div>
-                      <h3 className="text-4xl font-black tracking-tighter uppercase">Forensic Vault</h3>
-                      <p className="text-slate-400 text-xs font-bold uppercase tracking-[0.2em] mt-2">Inventory Integrity Analyst v5.3</p>
-                    </div>
+                    <div className="w-16 h-16 bg-indigo-50 rounded-[2rem] flex items-center justify-center text-white"><Icons.AI /></div>
+                    <h3 className="text-4xl font-black tracking-tighter uppercase">Forensic Vault</h3>
                   </div>
                 </div>
-
                 <div className="flex-1 flex overflow-hidden">
-                  <div className="w-96 bg-slate-50 border-r border-slate-200 p-12 space-y-10 flex flex-col overflow-y-auto custom-scrollbar">
-                    {!hasApiKey && (
-                      <div className="p-8 bg-red-50 rounded-[2rem] border border-red-100 flex flex-col gap-4 animate-in slide-in-from-left-4">
-                        <p className="text-[10px] font-black text-red-500 uppercase tracking-widest">Action Required</p>
-                        <p className="text-xs font-medium text-red-700 leading-relaxed">Diagnostic Engine is disconnected. Re-link your secure API hub or check your hosting environment variables.</p>
-                        <button onClick={handleSelectKey} className="w-full bg-red-500 text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-red-200 hover:bg-red-600 transition-all">Connect Engine</button>
-                      </div>
-                    )}
-                    
-                    <div>
-                      <h4 className="text-[10px] font-black text-slate-400 uppercase mb-8 tracking-[0.15em] border-b border-slate-200 pb-2">Diagnostic Scan</h4>
-                      <button onClick={startDeepDive} className={`w-full p-10 rounded-[3rem] flex flex-col items-center gap-5 transition-all relative border-2 ${deepDiveStatus === 'analyzing' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 cursor-wait' : deepDiveStatus === 'ready' ? 'bg-emerald-500 border-emerald-400 text-white shadow-2xl scale-[1.02]' : 'bg-white border-slate-200 hover:border-indigo-400 hover:shadow-xl'}`}>
-                        <div className={`text-5xl ${deepDiveStatus === 'analyzing' ? 'animate-pulse' : ''}`}>{deepDiveStatus === 'ready' ? '📊' : '🩺'}</div>
-                        <div className="text-center"><span className="font-black uppercase tracking-tighter text-base">{deepDiveStatus === 'idle' ? 'Full Forensic Audit' : deepDiveStatus === 'analyzing' ? 'Auditing Ledger...' : 'Audit Generated'}</span></div>
-                      </button>
-                    </div>
-
-                    <div className="pt-10 border-t border-slate-200">
-                      <h4 className="text-[10px] font-black text-slate-400 uppercase mb-6 tracking-[0.15em]">Forensic Logic Scopes</h4>
-                      <div className="flex flex-col gap-4">
-                        {SUGGESTED_QUESTIONS.map((q, idx) => {
-                          const isActive = activeChip === q;
-                          return (
-                            <button 
-                              key={idx} 
-                              disabled={isQuickAnalyzing}
-                              onClick={() => handleRunQuickAI(q)} 
-                              className={`text-left p-5 rounded-3xl border text-[11px] font-bold uppercase tracking-widest transition-all relative group ${isActive ? 'bg-indigo-600 border-indigo-500 text-white shadow-xl translate-x-2' : 'bg-white border-slate-200 text-slate-500 hover:border-indigo-400 hover:text-indigo-600 hover:shadow-md'}`}
-                            >
-                              <span className="relative z-10 leading-relaxed">{q}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                  <div className="w-96 bg-slate-50 border-r border-slate-200 p-12 space-y-10 flex flex-col overflow-y-auto">
+                    <button onClick={startDeepDive} className={`w-full p-10 rounded-[3rem] border-2 transition-all ${deepDiveStatus === 'analyzing' ? 'bg-indigo-50 border-indigo-200 cursor-wait' : 'bg-white border-slate-200 hover:border-indigo-400'}`}>
+                      <div className="text-5xl mb-4">🩺</div>
+                      <span className="font-black uppercase tracking-tighter text-base">Full Forensic Audit</span>
+                    </button>
+                    <div className="flex flex-col gap-4">
+                        {SUGGESTED_QUESTIONS.map((q, idx) => (
+                          <button key={idx} onClick={() => handleRunQuickAI(q)} className="text-left p-5 rounded-3xl border text-[11px] font-bold uppercase tracking-widest bg-white hover:border-indigo-400 transition-all">
+                            {q}
+                          </button>
+                        ))}
                     </div>
                   </div>
-
                   <div className="flex-1 flex flex-col bg-white">
                     <div ref={scrollRef} className="flex-1 p-16 overflow-y-auto bg-white custom-scrollbar">
                        {quickAiText ? (
-                         <div className="prose prose-indigo max-w-none font-medium text-slate-700 whitespace-pre-wrap leading-relaxed animate-in fade-in slide-in-from-bottom-6 duration-700 bg-slate-50/50 p-16 rounded-[4rem] border border-slate-100 shadow-inner">
+                         <div className="prose prose-indigo max-w-none font-medium text-slate-700 whitespace-pre-wrap leading-relaxed animate-in fade-in slide-in-from-bottom-6">
                            {quickAiText}
                          </div>
-                       ) : isQuickAnalyzing ? (
-                         <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-8 animate-pulse">
-                            <div className="w-20 h-20 bg-indigo-50 rounded-[2rem] flex items-center justify-center text-indigo-500 animate-bounce shadow-xl"><Icons.AI /></div>
-                            <div className="text-center">
-                               <h4 className="text-2xl font-black text-slate-900 tracking-tighter uppercase">Diagnosis Active</h4>
-                               <p className="text-sm font-bold uppercase tracking-widest mt-2 text-slate-400">Querying forensic ledger...</p>
-                            </div>
-                         </div>
-                       ) : (
-                         <div className="h-full flex flex-col items-center justify-center text-slate-300 opacity-40 text-center">
-                           <div className="w-28 h-28 bg-slate-50 rounded-full flex items-center justify-center mb-10 border border-slate-100 shadow-sm"><Icons.AI /></div>
-                           <h4 className="text-3xl font-black text-slate-900 tracking-tighter uppercase">Audit Awaiting Query</h4>
-                         </div>
-                       )}
+                       ) : <div className="h-full flex flex-col items-center justify-center text-slate-300 opacity-40 uppercase font-black">Audit Awaiting Query</div>}
                     </div>
                     <div className="p-16 bg-slate-50/50 border-t border-slate-200">
                       <div className="relative group max-w-4xl mx-auto">
-                        <input 
-                          type="text" 
-                          value={aiUserPrompt} 
-                          onChange={(e) => setAiUserPrompt(e.target.value)} 
-                          onKeyDown={(e) => e.key === 'Enter' && handleRunQuickAI()} 
-                          disabled={isQuickAnalyzing}
-                          placeholder="Ask about variances..." 
-                          className="w-full bg-white border-4 border-slate-200 group-focus-within:border-indigo-500 rounded-[3rem] px-14 py-8 text-base font-bold outline-none transition-all pr-32 shadow-2xl shadow-slate-200/50 placeholder:text-slate-300 disabled:opacity-50" 
-                        />
-                        <button 
-                          onClick={() => handleRunQuickAI()} 
-                          disabled={isQuickAnalyzing || !aiUserPrompt.trim()} 
-                          className="absolute right-6 top-6 w-16 h-16 bg-indigo-600 text-white rounded-[1.5rem] flex items-center justify-center shadow-xl hover:bg-indigo-700 disabled:bg-slate-300 transition-all active:scale-95 shadow-indigo-200"
-                        >
-                          {isQuickAnalyzing ? (
-                             <div className="w-6 h-6 border-4 border-white/20 border-t-white rounded-full animate-spin" />
-                          ) : <Icons.AI />}
+                        <input type="text" value={aiUserPrompt} onChange={(e) => setAiUserPrompt(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleRunQuickAI()} placeholder="Ask about variances..." className="w-full bg-white border-4 border-slate-200 rounded-[3rem] px-14 py-8 text-base font-bold outline-none pr-32 shadow-2xl" />
+                        <button onClick={() => handleRunQuickAI()} disabled={!aiUserPrompt.trim()} className="absolute right-6 top-6 w-16 h-16 bg-indigo-600 text-white rounded-[1.5rem] flex items-center justify-center shadow-xl shadow-indigo-200">
+                          <Icons.AI />
                         </button>
                       </div>
                     </div>
