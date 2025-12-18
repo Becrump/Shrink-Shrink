@@ -1,0 +1,5 @@
+{
+  "name": "MarketShrink AI Analyst",
+  "description": "An enterprise-grade dashboard for analyzing market inventory shrink and spoils. Extrapolates trends, compares driver routes, and uses Gemini AI to detect misreported inventory data.",
+  "requestFramePermissions": []
+}
