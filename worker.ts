@@ -1,4 +1,7 @@
 
+// Fix: Add declaration for HTMLRewriter which is a global class available in the Cloudflare Workers environment.
+declare const HTMLRewriter: any;
+
 export interface Env {
   ASSETS: { fetch: typeof fetch };
   API_KEY?: string;
@@ -8,50 +11,41 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const response = await env.ASSETS.fetch(request);
 
-    // Only inject into HTML files (primarily index.html)
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("text/html")) {
-      let html = await response.text();
-      
-      // Ensure the key exists in the worker environment
+    // Only modify successful HTML responses
+    const contentType = response.headers.get("content-type") || "";
+    if (response.ok && contentType.includes("text/html")) {
       const apiKey = env.API_KEY || "";
       
-      // Diagnostic log for Cloudflare dashboard (Real-time logs)
+      // Log to Cloudflare Workers Dashboard (Real-time logs)
       if (!apiKey) {
-        console.error("WORKER ALERT: API_KEY is missing from environment variables!");
+        console.warn("Worker: API_KEY environment variable is MISSING or EMPTY.");
       } else {
-        console.log(`WORKER LOG: API_KEY detected (Length: ${apiKey.length})`);
+        console.log("Worker: API_KEY detected and ready for injection.");
       }
-      
-      // Inject the script into the top of the <head> using a robust regex
-      const injection = `
-        <script>
-          (function() {
-            window.process = window.process || {};
-            window.process.env = window.process.env || {};
-            window.process.env.API_KEY = ${JSON.stringify(apiKey)};
-            
-            // Diagnostics to help the user verify deployment status in browser console
-            if (!window.process.env.API_KEY || window.process.env.API_KEY.trim() === "") {
-              console.warn("Forensic AI Engine: API_KEY variable detected as EMPTY in browser. Check Cloudflare Dashboard Variables.");
-            } else {
-              console.info("Forensic AI Engine: API_KEY successfully synchronized from Cloudflare.");
-            }
-          })();
-        </script>
+
+      const injectionScript = `
+        (function() {
+          window.process = window.process || {};
+          window.process.env = window.process.env || {};
+          window.process.env.API_KEY = ${JSON.stringify(apiKey)};
+          
+          if (!window.process.env.API_KEY) {
+            console.error("Forensic AI: API_KEY is undefined. Ensure it is set in Cloudflare Dashboard -> Settings -> Variables.");
+          } else {
+            console.info("Forensic AI: Environment variables synchronized from Cloudflare.");
+          }
+        })();
       `;
-      
-      // Replace case-insensitively and handle potential attributes on the head tag
-      if (html.toLowerCase().includes("<head>")) {
-        html = html.replace(/<head>/i, (match) => match + injection);
-      } else {
-        // Fallback: prepending to the html if head is missing
-        html = injection + html;
-      }
-      
-      return new Response(html, {
-        headers: response.headers
-      });
+
+      // Use HTMLRewriter to inject the script at the start of the <head>
+      // Fix: HTMLRewriter is now declared globally above.
+      return new HTMLRewriter()
+        .on("head", {
+          element(element: any) {
+            element.prepend(`<script>${injectionScript}</script>`, { html: true });
+          },
+        })
+        .transform(response);
     }
 
     return response;

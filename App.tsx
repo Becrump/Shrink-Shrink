@@ -76,9 +76,10 @@ const normalizePeriod = (str: string): string => {
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('report-upload');
   
+  // Fix: Standardized check for API key in either window.process or standard process global.
   const checkGlobalKey = useCallback(() => {
     try {
-      const key = window.process?.env?.API_KEY;
+      const key = (window as any).process?.env?.API_KEY || (process as any).env?.API_KEY;
       return !!(key && key.trim().length > 0);
     } catch {
       return false;
@@ -140,7 +141,7 @@ const App: React.FC = () => {
         setHasApiKey(checkGlobalKey());
       }
     };
-    // Periodic check in case injection happens late
+    // Fix: Ensure we periodically sync the key status as it might be injected late by workers.
     const interval = setInterval(checkKey, 2000);
     checkKey();
     return () => clearInterval(interval);
@@ -151,7 +152,7 @@ const App: React.FC = () => {
       await window.aistudio.openSelectKey();
       setHasApiKey(true);
     } else {
-      alert("API_KEY not found. Please set it in Cloudflare Dashboard -> shrink-shrink -> Settings -> Variables.");
+      alert("API_KEY not found. Please ensure your Cloudflare environment variables are set correctly.");
     }
   };
 
@@ -253,7 +254,15 @@ const App: React.FC = () => {
     setView('ai-insights');
     
     try {
-      await queryMarketAIQuick(filteredRecords, stats, question, (text) => setQuickAiText(text));
+      await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
+        // Fix: Detect if service signaled that key needs re-selection.
+        if (text === "RESELECT_KEY") {
+          setHasApiKey(false);
+          handleSelectKey();
+        } else {
+          setQuickAiText(text);
+        }
+      });
     } finally {
       setIsQuickAnalyzing(false);
       setActiveChip(null);
@@ -271,6 +280,7 @@ const App: React.FC = () => {
     if (deepDiveStatus === 'analyzing' || filteredRecords.length === 0) return;
     setDeepDiveStatus('analyzing');
     queryMarketAIDeep(filteredRecords, stats).then(result => {
+      // Fix: Handle key re-selection for deep dive.
       if (result === "RESELECT_KEY") {
         setHasApiKey(false);
         setDeepDiveStatus('idle');
