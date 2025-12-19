@@ -73,53 +73,95 @@ const App: React.FC = () => {
   const [isInitializing, setIsInitializing] = useState(true);
   const [showSystemDetails, setShowSystemDetails] = useState(false);
   const [systemInfo, setSystemInfo] = useState<{browserKey: string, workerData: any} | null>(null);
+  const [connectionTestResult, setConnectionTestResult] = useState<string | null>(null);
   
-  // 1. BOOTLOADER: Fetch key from Worker on mount
+  // 1. BOOTLOADER: Fetch key from Worker on mount (Robust Version)
   useEffect(() => {
     const initConfig = async () => {
+      const paths = ['/api/config', 'api/config'];
       try {
-        const res = await fetch('/api/config');
-        
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        }
+        const currentBase = window.location.href;
+        // Use try-catch for URL construction to prevent "Invalid URL" crash
+        const absoluteUrl = new URL('api/config', currentBase).href;
+        paths.unshift(absoluteUrl);
+      } catch (e) {
+        // Ignore URL construction errors
+      }
+      
+      let lastError = null;
 
-        const rawText = await res.text();
-        const trimmed = rawText.trim();
-
-        // Safety check: Don't attempt to parse if it's clearly not JSON
-        if (!trimmed.startsWith('{')) {
-          throw new Error("Received non-JSON response from /api/config. The worker might not be intercepting this route correctly.");
-        }
-
+      for (const path of paths) {
         try {
-          const data = JSON.parse(trimmed);
-          if (data.API_KEY) {
-            window.process.env.API_KEY = data.API_KEY;
-            setIsKeyActive(true);
+          const res = await fetch(path);
+          if (!res.ok) continue;
+
+          const rawText = await res.text();
+          const trimmed = rawText.trim();
+
+          if (trimmed.startsWith('{')) {
+            const data = JSON.parse(trimmed);
+            if (data.API_KEY) {
+              window.process.env.API_KEY = data.API_KEY;
+              setIsKeyActive(true);
+              return; 
+            }
           }
-        } catch (parseErr) {
-          console.error("JSON parse failed. Content preview:", trimmed.substring(0, 50));
+        } catch (e: any) {
+          lastError = e;
         }
-      } catch (e: any) {
-        console.error("Config fetch failed:", e.message);
-      } finally {
-        setIsInitializing(false);
+      }
+      
+      if (lastError) {
+        console.warn("Forensic config not found in standard paths.");
       }
     };
-    initConfig();
+
+    initConfig().finally(() => {
+      setIsInitializing(false);
+    });
   }, []);
 
   const openIntegrityCheck = async () => {
+    setConnectionTestResult(null); // Reset test result on open
+    const paths = ['/api/debug-env', 'api/debug-env'];
     try {
-      const res = await fetch('/api/debug-env');
-      const workerData = await res.json();
-      const browserKey = window.process?.env?.API_KEY || "undefined";
-      setSystemInfo({ browserKey, workerData });
-      setShowSystemDetails(true);
-    } catch (e) {
-      setSystemInfo({ browserKey: window.process?.env?.API_KEY || "undefined", workerData: { error: "Failed to reach Worker diagnostic endpoint" } });
-      setShowSystemDetails(true);
+      const currentBase = window.location.href;
+      const absoluteUrl = new URL('api/debug-env', currentBase).href;
+      paths.unshift(absoluteUrl);
+    } catch (e) {}
+
+    for (const path of paths) {
+      try {
+        const res = await fetch(path);
+        if (res.ok) {
+          const workerData = await res.json();
+          const browserKey = (window.process?.env?.API_KEY as string) || "undefined";
+          setSystemInfo({ browserKey, workerData });
+          setShowSystemDetails(true);
+          return;
+        }
+      } catch (e) {}
+    }
+    setSystemInfo({ 
+      browserKey: (window.process?.env?.API_KEY as string) || "undefined", 
+      workerData: { error: "Failed to reach Worker diagnostic endpoint." } 
+    });
+    setShowSystemDetails(true);
+  };
+
+  const runConnectionTest = async () => {
+    setConnectionTestResult("Pinging Endpoint...");
+    try {
+      const start = Date.now();
+      const res = await fetch('/api/config');
+      const ms = Date.now() - start;
+      if (res.ok) {
+        setConnectionTestResult(`SUCCESS: ${res.status} ${res.statusText} (${ms}ms)`);
+      } else {
+        setConnectionTestResult(`FAILED: ${res.status} ${res.statusText}`);
+      }
+    } catch (e: any) {
+      setConnectionTestResult(`NETWORK ERROR: ${e.message}`);
     }
   };
 
@@ -141,14 +183,26 @@ const App: React.FC = () => {
   const [selectedMarketFilter, setSelectedMarketFilter] = useState(() => localStorage.getItem(STORAGE_KEYS.MARKET) || 'All');
   const [activeSegment, setActiveSegment] = useState<SegmentFilter>(() => (localStorage.getItem(STORAGE_KEYS.SEGMENT) as SegmentFilter) || 'ALL');
 
+  const uniqueMarkets = useMemo(() => {
+    const m = new Set<string>();
+    records.forEach(r => { if(r.marketName) m.add(r.marketName); });
+    const sorted = Array.from(m).sort();
+    return ['All', ...sorted];
+  }, [records]);
+
   const filteredRecords = useMemo(() => {
     return records.filter(r => {
       const normPeriod = normalizePeriod(r.period);
       if (selectedMonths.size > 0 && !selectedMonths.has(normPeriod)) return false;
       if (selectedMarketFilter !== 'All' && r.marketName !== selectedMarketFilter) return false;
+      
+      const isCold = /^(KF|F\s|B\s)/i.test(r.itemNumber) || /^(KF|F\s|B\s)/i.test(r.itemName);
+      if (activeSegment === 'COLD') return isCold;
+      if (activeSegment === 'SODA_SNACK') return !isCold;
+
       return true;
     });
-  }, [records, selectedMonths, selectedMarketFilter]);
+  }, [records, selectedMonths, selectedMarketFilter, activeSegment]);
 
   const [quickAiText, setQuickAiText] = useState<string>('');
   const [aiUserPrompt, setAiUserPrompt] = useState<string>('');
@@ -165,6 +219,7 @@ const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Persistence
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
@@ -224,6 +279,7 @@ const App: React.FC = () => {
     };
   }, [filteredRecords]);
 
+  // AI Logic
   const handleRunQuickAI = async (customPrompt?: string) => {
     const question = customPrompt || aiUserPrompt;
     if (!question.trim() || records.length === 0 || isQuickAnalyzing) return;
@@ -267,6 +323,7 @@ const App: React.FC = () => {
     }).catch(() => setDeepDiveStatus('idle'));
   };
 
+  // Upload Logic
   const handleFileUpload = (file: File, targetedMonth?: string) => {
     setIsProcessing(true);
     setProcessingStatus('Forensic Sync Initiated...');
@@ -300,6 +357,8 @@ const App: React.FC = () => {
                 else if (s.includes('variance')) colMap.variance = idx;
                 else if (s.includes('revenue')) colMap.revenue = idx;
                 else if (s.includes('cost')) colMap.itemCost = idx;
+                else if (['sold', 'qty', 'quantity', 'sales'].some(k => s.includes(k))) colMap.soldQty = idx;
+                else if (['price', 'retail', 'srp', 'sale'].some(k => s.includes(k))) colMap.salePrice = idx;
               });
               break;
             }
@@ -309,6 +368,10 @@ const App: React.FC = () => {
             const invVar = parseFloat(row[colMap.variance]) || 0;
             if (Math.abs(invVar) < 0.001) return;
             const cost = parseFloat(row[colMap.itemCost]) || 0;
+            const price = parseFloat(row[colMap.salePrice]) || 0;
+            const qty = parseFloat(row[colMap.soldQty]) || 0;
+            const profit = price > 0 ? (price - cost) * qty : 0;
+            
             allExtractedRecords.push({
               itemNumber: String(row[colMap.itemNum] || ''),
               itemName: String(row[colMap.itemName] || ''),
@@ -316,6 +379,9 @@ const App: React.FC = () => {
               totalRevenue: parseFloat(row[colMap.revenue]) || 0,
               shrinkLoss: invVar < 0 ? Math.abs(invVar * cost) : 0,
               unitCost: cost,
+              soldQty: qty,
+              salePrice: price,
+              itemProfit: profit,
               marketName: cleanName,
               period: targetedMonth || 'Current'
             });
@@ -329,6 +395,7 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans text-slate-900">
+      {/* Initialization Spinner */}
       {isInitializing && (
         <div className="fixed inset-0 z-[500] bg-slate-900 flex flex-col items-center justify-center text-white p-12">
            <div className="w-16 h-16 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mb-8" />
@@ -336,6 +403,7 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Processing Spinner */}
       {isProcessing && (
         <div className="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-xl flex items-center justify-center animate-in fade-in duration-300">
            <div className="bg-white p-12 rounded-[4rem] shadow-2xl flex flex-col items-center gap-8 border border-slate-200">
@@ -345,6 +413,7 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Diagnostic Modal */}
       {showSystemDetails && systemInfo && (
         <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-md flex items-center justify-center p-8 animate-in fade-in duration-300">
            <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-[3rem] p-12 text-slate-300 shadow-2xl overflow-hidden flex flex-col">
@@ -354,7 +423,20 @@ const App: React.FC = () => {
               </div>
               <div className="space-y-8 flex-1 overflow-y-auto custom-scrollbar pr-4">
                  <div className="bg-black/40 p-8 rounded-3xl border border-slate-800">
-                    <h3 className="text-indigo-400 font-black text-[10px] uppercase tracking-widest mb-4">Memory State</h3>
+                    <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-indigo-400 font-black text-[10px] uppercase tracking-widest">Memory State</h3>
+                      <button 
+                        onClick={runConnectionTest} 
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all"
+                      >
+                        Test Connection
+                      </button>
+                    </div>
+                    {connectionTestResult && (
+                      <div className={`mb-4 p-3 rounded-xl text-xs font-mono font-bold ${connectionTestResult.includes("SUCCESS") ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"}`}>
+                        {connectionTestResult}
+                      </div>
+                    )}
                     <div className="font-mono text-xs break-all space-y-2">
                        <p><span className="text-slate-500">process.env.API_KEY:</span> <span className={systemInfo.browserKey.length > 20 ? 'text-emerald-400' : 'text-red-400'}>{systemInfo.browserKey.length > 10 ? `${systemInfo.browserKey.substring(0, 6)}...${systemInfo.browserKey.substring(systemInfo.browserKey.length - 4)}` : "NOT_IN_MEMORY"}</span></p>
                     </div>
@@ -373,6 +455,7 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Sidebar Navigation */}
       <aside className="w-64 bg-slate-900 text-slate-300 border-r border-slate-800 flex flex-col shrink-0 z-20 shadow-2xl">
         <div className="p-8">
           <h1 className="text-xl font-bold text-white flex items-center gap-3">
@@ -401,6 +484,7 @@ const App: React.FC = () => {
       </aside>
 
       <main className="flex-1 overflow-y-auto bg-[#F8FAFC] custom-scrollbar">
+        {/* Import Audit Modal */}
         {importStaging && (
           <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/90 backdrop-blur-xl">
             <div className="bg-white w-full max-w-xl rounded-[4rem] shadow-2xl p-12 border border-slate-200">
@@ -421,6 +505,7 @@ const App: React.FC = () => {
         )}
 
         <div className="p-12 max-w-7xl mx-auto">
+          {/* Month Grid Selector */}
           <div className="mb-14 flex gap-5 overflow-x-auto pb-8 custom-scrollbar scroll-smooth">
             {MONTHS.map(m => {
               const isPopulated = populatedMonths.has(m);
@@ -446,8 +531,40 @@ const App: React.FC = () => {
           </div>
           <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0], activeUploadMonth || undefined)} />
 
+          {/* Fallback for no data */}
+          {records.length === 0 && view !== 'report-upload' && (
+             <div className="text-center py-20 opacity-50 font-black text-slate-300 uppercase tracking-widest">Select a month above to load forensic data</div>
+          )}
+
+          {/* DASHBOARD VIEW */}
           {view === 'dashboard' && records.length > 0 && (
             <div className="animate-in fade-in slide-in-from-bottom-5 duration-700">
+              
+              <div className="flex flex-wrap items-center justify-between gap-6 mb-8">
+                 <div className="bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm flex items-center">
+                    {(['ALL', 'SODA_SNACK', 'COLD'] as SegmentFilter[]).map(seg => (
+                       <button 
+                         key={seg}
+                         onClick={() => setActiveSegment(seg)}
+                         className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeSegment === seg ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'}`}
+                       >
+                         {seg === 'ALL' ? 'All Inventory' : seg === 'SODA_SNACK' ? 'Snacks & Drinks' : 'Cold Food'}
+                       </button>
+                    ))}
+                 </div>
+                 
+                 <div className="relative group">
+                    <select 
+                      value={selectedMarketFilter} 
+                      onChange={(e) => setSelectedMarketFilter(e.target.value)}
+                      className="appearance-none bg-white border border-slate-200 text-slate-700 text-xs font-bold py-4 pl-6 pr-12 rounded-2xl shadow-sm outline-none focus:border-indigo-500 hover:border-indigo-300 transition-all cursor-pointer uppercase tracking-wider"
+                    >
+                       {uniqueMarkets.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400"><Icons.Markets /></div>
+                 </div>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mb-16">
                  <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100">
                     <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Shrink</p>
@@ -462,6 +579,19 @@ const App: React.FC = () => {
             </div>
           )}
 
+          {/* UPLOAD / LANDING VIEW */}
+          {view === 'report-upload' && (
+             <div className="flex flex-col items-center justify-center py-20 animate-in zoom-in-95 duration-500">
+                <div className="bg-white p-20 rounded-[5rem] shadow-2xl border border-slate-200 text-center max-w-2xl">
+                   <div className="w-24 h-24 bg-indigo-50 rounded-[2.5rem] flex items-center justify-center text-indigo-600 mx-auto mb-8 text-3xl"><Icons.Upload /></div>
+                   <h2 className="text-4xl font-black mb-4 tracking-tighter text-slate-900">Forensic Data Ingestion</h2>
+                   <p className="text-slate-500 mb-12 font-medium text-lg">Select a month in the grid above or drop a consolidated report here to begin analysis.</p>
+                   <button onClick={() => fileInputRef.current?.click()} className="bg-indigo-600 text-white px-10 py-5 rounded-3xl font-black uppercase tracking-widest text-xs shadow-2xl hover:bg-indigo-700 transition-all hover:scale-105 active:scale-95">Select Source File</button>
+                </div>
+             </div>
+          )}
+
+          {/* AI FORENSIC HUB VIEW */}
           {view === 'ai-insights' && (
             <div className="max-w-6xl mx-auto animate-in zoom-in-95 duration-700">
               <div className="bg-white rounded-[5rem] shadow-2xl overflow-hidden min-h-[850px] flex flex-col border border-slate-200">
