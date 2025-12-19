@@ -48,32 +48,33 @@ const getAggregates = (records: ShrinkRecord[]) => {
 };
 
 const OPERATIONAL_CONTEXT = `
-  OPERATIONAL WORKFLOW CONTEXT:
+  OPERATIONAL WORKFLOW CONTEXT (CANTALOUPE / SEED EXPERT MODE):
   
-  1. COLD FOOD (Fresh) - HIGH RISK FOR RECEIVING ERRORS: 
+  1. COLD FOOD (Fresh) - TABLET RECEIVING ERRORS: 
     - IDENTIFIERS: Item Number or Name starts with "KF", "F ", or "B ".
     - INVENTORY METHOD: UPC Scanning (Highly Precise). 
     - RECEIVING ("Adds") METHOD: Manual Tablet Entry.
-    - FORENSIC DIAGNOSIS: 
-      - If there is an OVERAGE (Positive Variance) in Cold Food, it is almost always a RECEIVING ERROR (Driver forgot to "Add" the item on the tablet).
-      - If there is SHRINK (Negative Variance), check if they double-added it the week before, or if it's true theft.
+    - FORENSIC DIAGNOSIS: Positive Variance (Overage) here usually means the driver forgot to "Add" the item on the tablet. Negative Variance (Shrink) implies they added it but it wasn't there (or was stolen).
 
-  2. FROZEN ITEMS (Ice Cream, Meals) - THE "DEPOT FREEZER" TRAP:
-    - CONTEXT: Frozen items are often delivered same-day but placed in the **Depot Freezer** (not the market machine) to stay cold during the shift.
-    - THE PROCESS ERROR: The driver "Adds" the item on the market tablet (digitally receiving it) but physically leaves the item in the Depot Freezer.
-    - RESULT: The Inventory Scan finds 0 items in the market. The Book Inventory expects the items (due to the "Add").
-    - SYMPTOM: High "Shrink" (Phantom Loss) on Frozen items.
-    - CONSEQUENCE: The system calculates the item is below par and **Auto-Reorders**, bombarding the depot with extra inventory.
-    - CORRECTION: Drivers must CLEAR the pre-picked "Adds" on the tablet if they do not physically stock the machine immediately.
+  2. FROZEN ITEMS & THE "DEPOT FREEZER" PARADOX (CRITICAL LOGIC):
+    - SCENARIO: Frozen items are delivered but placed in the **Depot Freezer** (not packed out) to avoid melting.
+    - SEED SOFTWARE LOGIC (Pre-Picking & Pars):
+      - **IF DRIVER CLEARS THE ADD**: The tablet tells Seed "This item is not in the market."
+        - RESULT: Market Inventory drops below Par Level.
+        - CONSEQUENCE: **System Auto-Reorders**. The warehouse picks MORE of the item for the next delivery, flooding the depot.
+      - **IF DRIVER KEEPS THE ADD (But leaves item in Depot)**: The tablet tells Seed "This item is in the machine."
+        - RESULT: Next physical scan finds 0 items.
+        - CALCULATION: (Previous Stock + Add) - 0 Scan = Sales.
+        - CONSEQUENCE: **Phantom Shrink**. The system thinks the items were sold/stolen.
+    - THE FIX: The driver is in a Catch-22. To fix this, they must either **physically stock the machine** immediately OR count the items in the Depot Freezer as part of their "End of Day" inventory. Simply clearing the add solves shrink but breaks the warehouse replenishment loop.
 
   3. FORENSIC LOGIC: NAMING CONFUSION DETECTOR:
     - Staff often mis-select items on the tablet during receiving. 
     - LOOK FOR: An Overage (Gain) in one item and a Shrink (Loss) in a similarly named item (e.g., "Classic Cheeseburger" overage vs "Cheeseburger" shrink).
-    - If names are >80% similar and variances are inverted, FLAG this as "Naming Confusion" rather than physical theft.
+    - If names are >80% similar and variances are inverted, FLAG this as "Naming Confusion".
     
-  4. SNACKS & DRINKS (Ambient) - INVENTORY PROCESS RISK: 
-    - INVENTORY METHOD: Manual Count vs. Fixed Planogram (Sloppier).
-    - FORENSIC MARKER: Variances here are typically Counting Errors or Physical Theft. Overages usually imply sloppy counting in previous periods.
+  4. SNACKS & DRINKS (Ambient): 
+    - Variances here are typically Counting Errors or Physical Theft. Overages usually imply sloppy counting in previous periods.
 `;
 
 export const queryMarketAIQuick = async (
@@ -87,7 +88,7 @@ export const queryMarketAIQuick = async (
     const { marketNames, outliers } = getAggregates(records);
 
     const prompt = `
-      ROLE: Senior Forensic Inventory Auditor.
+      ROLE: Senior Forensic Inventory Auditor & Cantaloupe Seed Software Expert.
       ${OPERATIONAL_CONTEXT}
       
       DATA CONTEXT:
@@ -99,10 +100,9 @@ export const queryMarketAIQuick = async (
       
       STRICT RESPONSE GUIDELINES:
       1. If the user asks about Cold Food/Fresh items, blame the "Tablet Adds" process first.
-      2. If Frozen items are mentioned, check for the "Depot Freezer" trap (added but not stocked).
+      2. If Frozen items are mentioned, explain the "Depot Freezer Paradox" (Clearing adds = Reorders; Keeping adds = Shrink).
       3. EXPLICITLY look for naming confusion (similar names, opposite variances).
-      4. Example: Flag if "Pepperoni Pizza" has a gain while "Pep Pizza" has a loss.
-      5. Use clinical, bulleted Markdown.
+      4. Use clinical, bulleted Markdown.
     `;
 
     const responseStream = await ai.models.generateContentStream({
@@ -136,7 +136,7 @@ export const queryMarketAIDeep = async (
     const { outliers } = getAggregates(records);
 
     const prompt = `
-      ROLE: You are "The Shrink Shrink", a helpful, encouraging, and observant inventory coach. Your goal is to make sense of the data for the team in a way that is digestible, coherent, and non-accusatory.
+      ROLE: You are "The Shrink Shrink", a helpful inventory coach who is an expert in the **Seed / MyCantaloupe** software logic.
       ${OPERATIONAL_CONTEXT}
       
       VITALS: 
@@ -146,18 +146,19 @@ export const queryMarketAIDeep = async (
       
       PLEASE PROVIDE A DIAGNOSTIC SUMMARY (Use clear, simple language):
       
-      1. **The Big Picture**: A brief, coherent summary of what the numbers are saying. Are they losing money (theft) or just dealing with paperwork/process ghosts?
+      1. **The Big Picture**: A brief, coherent summary of what the numbers are saying.
       
       2. **Process Breakdowns (The "Why")**:
-         - Explain patterns in **Cold Food** (Fresh) items. If there are overages, explain gently that this usually points to the "Tablet Add" process during delivery not matching the precise UPC scanning at checkout.
-         - **Frozen Item Check**: If there is shrink in Frozen items (Ice Cream, etc.), ask if these items are sitting in the Depot Freezer but were "Added" to the market tablet. Explain that this causes **false shrink** and triggers **unwanted reorders**.
-         - Discuss **Naming Confusion**. Point out if similar items (like "Cheeseburger" vs "Classic Cheeseburger") are trading variances, suggesting a selection error rather than loss.
+         - **Frozen Item Check**: Explain the **Seed Software Logic**. If there is shrink in Frozen, ask if they are keeping the tablet "Adds" but leaving food in the Depot Freezer. 
+         - **The Frozen Catch-22**: Explain that if they *clear* the add to fix the shrink, Seed will see the market is under PAR and **Auto-Reorder** more stock, flooding the depot. The only fix is to physically stock the machine or count the depot inventory.
+         - **Cold Food**: Explain tablet entry errors vs scanning.
+         - **Naming Confusion**: Check for similar names trading variances.
       
-      3. **Key Observations**: Highlight specific items from the data that illustrate these breakdowns.
+      3. **Key Observations**: Highlight specific items from the data.
       
-      4. **Helpful Recommendations**: Suggest practical, easy wins to improve the process (e.g., "Clear tablet adds if storing in the depot freezer"). Focus on "how to help the system help you" rather than compliance demands.
+      4. **Helpful Recommendations**: Suggest practical wins. "If you don't pack out the freezer, you must count that stock, otherwise the system thinks you need more!"
       
-      Tone: Helpful, Explanatory, Coherent. Avoid corporate jargon or "Audit" terminology.
+      Tone: Helpful, Explanatory, Coherent. Show off your knowledge of how the Seed system thinks (Pars vs On Hand).
       
       DATA: ${JSON.stringify(outliers)}
     `;
