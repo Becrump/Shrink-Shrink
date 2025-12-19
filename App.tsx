@@ -17,24 +17,81 @@ declare global {
 
 type SegmentFilter = 'ALL' | 'SODA_SNACK' | 'COLD';
 
-interface ImportStaging {
-  records: Partial<ShrinkRecord>[];
-  marketNames: string[];
-  period: string;
-  detectedColumns: string[];
+interface Notification {
+  type: 'success' | 'error';
+  message: string;
 }
 
-const MONTHS = [
+interface CalcExplanation {
+  title: string;
+  formula: string;
+  description: string;
+}
+
+interface ItemDrilldown {
+  name: string;
+  type: 'shrink' | 'overage';
+  total: number;
+  breakdown: { market: string; qty: number; value: number }[];
+}
+
+const MONTH_ORDER = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
-const SUGGESTED_QUESTIONS = [
+// 50 Powerful Forensic Prompts
+const MASTER_PROMPTS = [
   "Find naming confusion errors (e.g. Cheeseburger vs Classic Cheeseburger).",
   "Are Cold Food (KF/F/B) overages due to missing tablet 'Adds'?",
   "Analyze items with inverted variances in the same market.",
   "Contrast Scanned Food (KF) accuracy vs Manual Snack counting.",
-  "Which market has the highest risk of tablet receiving errors?"
+  "Which market has the highest risk of tablet receiving errors?",
+  "Identify the top 3 items with high shrink but zero overage.",
+  "Which market consistently has the highest Cold Food overages?",
+  "Analyze the top 5 highest value shrink items across all markets.",
+  "List items where the Variance is positive. Is this a receiving error?",
+  "Show me the 'Integrity Score' trend for the worst performing market.",
+  "Which items account for 80% of the total shrink value?",
+  "Compare shrinkage in 'Snacks' vs 'Beverages' categories.",
+  "Is there a correlation between high revenue and high shrink %?",
+  "Calculate the potential annual loss if current shrink trends continue.",
+  "Find items with a Unit Cost > $5 and negative variance.",
+  "Which market has the best inventory accuracy?",
+  "Are we losing more money on high-volume or high-cost items?",
+  "Show me items with >$50 net loss in the last period.",
+  "Check for 'Ghost Inventory' (Sold Qty > 0, but Variance is negative).",
+  "Analyze the impact of 'Substitution' errors in the Deli.",
+  "What is the total 'Lost Retail Value' vs 'Lost Cost'?",
+  "Identify items that have never shown an overage (Pure Loss).",
+  "Which item has the highest frequency of errors across all markets?",
+  "Is the 'Dairy' category performing worse than 'Produce'?",
+  "Find the market with the highest 'Unexplained Variance'.",
+  "Show me the ratio of Overage to Shrink for 'Chips'.",
+  "Did 'Water' sales cover the loss in 'Soda'?",
+  "Identify items with > 20% shrinkage rate relative to revenue.",
+  "Compare 'Energy Drink' performance across all sites.",
+  "Is there a pattern of recurring shortages for specific items?",
+  "Calculate the 'Net Variance' for all 'Sandwiches'.",
+  "Which items should we consider removing due to high shrink?",
+  "Analyze 'Turkey Sandwich' vs 'Turkey Club' for cross-ringing.",
+  "Show me the variance distribution for 'Healthy' items.",
+  "Are 'New Items' shrinking faster than established ones?",
+  "Find items with positive variance in Market A but negative in Market B.",
+  "What is the financial impact of 'Unit of Measure' errors?",
+  "Identify items with small but frequent losses (Death by a thousand cuts).",
+  "Is 'Employee Theft' suspected in high-value chargers/electronics?",
+  "Compare the 'Unit Cost' of the top 10 shrink items.",
+  "Show me the trend of 'Unknown' or 'Misc' items.",
+  "Generate a 'Top 10 Watchlist' for the next audit.",
+  "Did the price point affect shrink rates for 'Candy'?",
+  "Find the item with the most volatile variance month-over-month.",
+  "Show me the total profit lost to 'Chocolate Milk' shrink.",
+  "Is 'Ice Cream' shrinking due to theft or spoilage?",
+  "Which items have a variance of exactly -1 consistently?",
+  "Rank markets by their 'Net Variance' performance.",
+  "Identify potential theft rings in high-value proteins.",
+  "What is the recovery rate (Overage) for previous Shrink items?"
 ];
 
 const STORAGE_KEYS = {
@@ -63,7 +120,7 @@ const humanizeMarketName = (name: string): string => {
 const normalizePeriod = (str: string): string => {
   if (!str) return 'Unknown';
   const normalized = str.trim().toLowerCase();
-  for (const m of MONTHS) if (normalized.includes(m.toLowerCase())) return m;
+  for (const m of MONTH_ORDER) if (normalized.includes(m.toLowerCase())) return m;
   return str;
 };
 
@@ -74,6 +131,29 @@ const App: React.FC = () => {
   const [showSystemDetails, setShowSystemDetails] = useState(false);
   const [systemInfo, setSystemInfo] = useState<{browserKey: string, workerData: any} | null>(null);
   const [connectionTestResult, setConnectionTestResult] = useState<string | null>(null);
+  
+  // Explanation Modal State
+  const [explanation, setExplanation] = useState<CalcExplanation | null>(null);
+  
+  // Item Drilldown State
+  const [drilldown, setDrilldown] = useState<ItemDrilldown | null>(null);
+
+  // Notification State
+  const [notification, setNotification] = useState<Notification | null>(null);
+
+  // Rotating Prompts State
+  const [rotatedPrompts, setRotatedPrompts] = useState<string[]>([]);
+
+  // Shuffle Prompts Function
+  const shufflePrompts = useCallback(() => {
+    const shuffled = [...MASTER_PROMPTS].sort(() => 0.5 - Math.random());
+    setRotatedPrompts(shuffled.slice(0, 5));
+  }, []);
+
+  // Initial Shuffle on Mount
+  useEffect(() => {
+    shufflePrompts();
+  }, [shufflePrompts]);
   
   // 1. BOOTLOADER: Fetch key from Worker on mount (Robust Version)
   useEffect(() => {
@@ -219,7 +299,6 @@ const App: React.FC = () => {
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState('');
-  const [importStaging, setImportStaging] = useState<ImportStaging | null>(null);
   const [activeUploadMonth, setActiveUploadMonth] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -248,18 +327,22 @@ const App: React.FC = () => {
     const set = new Set<string>();
     records.forEach(r => {
       const norm = normalizePeriod(r.period);
-      if (MONTHS.includes(norm)) set.add(norm);
+      if (MONTH_ORDER.includes(norm)) set.add(norm);
     });
     return set;
   }, [records]);
 
   const timelineStats = useMemo(() => {
-    const ts: Record<string, { shrink: number; revenue: number }> = {};
+    const ts: Record<string, { shrink: number; overage: number; revenue: number }> = {};
     records.forEach(r => {
       const norm = normalizePeriod(r.period);
-      if (!ts[norm]) ts[norm] = { shrink: 0, revenue: 0 };
-      const impact = (r.invVariance * (r.unitCost || 0));
-      if (impact < 0) ts[norm].shrink += Math.abs(impact);
+      if (!ts[norm]) ts[norm] = { shrink: 0, overage: 0, revenue: 0 };
+      
+      const shrink = r.shrinkLoss || 0;
+      const overage = r.overageGain || 0;
+      
+      ts[norm].shrink += shrink;
+      ts[norm].overage += overage;
       ts[norm].revenue += r.totalRevenue || 0;
     });
     return ts;
@@ -267,22 +350,73 @@ const App: React.FC = () => {
 
   const stats = useMemo(() => {
     const filtered = filteredRecords;
-    if (filtered.length === 0) return { totalShrink: 0, totalRevenue: 0, totalOverage: 0, netVariance: 0, accuracy: 100, count: 0 };
+    if (filtered.length === 0) return { 
+      totalShrink: 0, totalRevenue: 0, totalOverage: 0, netVariance: 0, accuracy: 100, count: 0,
+      shrinkPct: 0, overagePct: 0, netPct: 0 
+    };
     
     let totalShrink = 0, totalRevenue = 0, totalOverage = 0;
     filtered.forEach(rec => {
       totalRevenue += rec.totalRevenue || 0;
-      const impact = rec.invVariance * (rec.unitCost || 0);
-      if (impact < 0) totalShrink += Math.abs(impact);
-      else if (impact > 0) totalOverage += impact;
+      totalShrink += rec.shrinkLoss || 0;
+      totalOverage += rec.overageGain || 0;
     });
+    
     const netVariance = totalOverage - totalShrink;
-    const accuracy = totalRevenue > 0 ? (1 - (totalShrink / totalRevenue)) * 100 : 100;
+    const grossAbsoluteError = totalShrink + totalOverage; // Penalize both confusion and loss
+
+    const accuracy = totalRevenue > 0 ? (1 - (grossAbsoluteError / totalRevenue)) * 100 : 100;
+    
     return {
-      totalShrink, totalRevenue, totalOverage, netVariance,
+      totalShrink, 
+      totalRevenue, 
+      totalOverage, 
+      netVariance,
+      shrinkPct: totalRevenue > 0 ? (totalShrink / totalRevenue) * 100 : 0,
+      overagePct: totalRevenue > 0 ? (totalOverage / totalRevenue) * 100 : 0,
+      netPct: totalRevenue > 0 ? (Math.abs(netVariance) / totalRevenue) * 100 : 0,
       accuracy: Number(Math.max(0, accuracy).toFixed(2)),
       count: filtered.length
     };
+  }, [filteredRecords]);
+
+  // Handle Item Drilldown
+  const handleItemDrilldown = useCallback((name: string, type: 'shrink' | 'overage') => {
+    // 1. Find all instances of this item in the currently filtered view
+    const relevantRecords = filteredRecords.filter(r => r.itemName === name);
+    
+    const marketMap = new Map<string, { qty: number; value: number }>();
+    
+    relevantRecords.forEach(r => {
+      // Determine if this specific record contributes to the type we are investigating
+      // Shrink comes from negative variance (stored as positive shrinkLoss)
+      // Overage comes from positive variance (stored as positive overageGain)
+      const val = type === 'shrink' ? r.shrinkLoss : r.overageGain;
+      const rawVariance = r.invVariance;
+
+      if (val && val > 0) {
+        const existing = marketMap.get(r.marketName) || { qty: 0, value: 0 };
+        marketMap.set(r.marketName, {
+          qty: existing.qty + rawVariance, // For shrink this will be negative, for overage positive
+          value: existing.value + val // This is the absolute dollar value impact
+        });
+      }
+    });
+
+    const breakdown = Array.from(marketMap.entries()).map(([market, data]) => ({
+      market,
+      qty: data.qty,
+      value: data.value
+    })).sort((a, b) => b.value - a.value);
+
+    const total = breakdown.reduce((acc, curr) => acc + curr.value, 0);
+
+    setDrilldown({
+      name,
+      type,
+      total,
+      breakdown
+    });
   }, [filteredRecords]);
 
   // AI Logic
@@ -295,7 +429,7 @@ const App: React.FC = () => {
     setAiUserPrompt('');
     setView('ai-insights');
     try {
-      await queryMarketAIQuick(records, stats, question, (text) => {
+      await queryMarketAIQuick(filteredRecords, stats, question, (text) => {
         if (text === "AUTH_REQUIRED") {
           setIsKeyActive(false);
           setQuickAiText("DIAGNOSTIC ENGINE OFFLINE. Check System Integrity.");
@@ -344,23 +478,36 @@ const App: React.FC = () => {
           const worksheet = workbook.Sheets[sheetName];
           const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
           if (!jsonData || jsonData.length < 5) return;
+          
+          // Metadata extraction attempts (Location/Market Name)
           const locationVal = (jsonData[2] as any[])?.[0] || '';
           const marketVal = (jsonData[3] as any[])?.[0] || '';
           const cleanName = humanizeMarketName(String(marketVal || locationVal || sheetName));
           if (!humanMarketNames.includes(cleanName)) humanMarketNames.push(cleanName);
+          
+          // --- HEADER DETECTION LOGIC ---
           let colMap = { itemNum: 0, itemName: 1, variance: 2, revenue: 3, soldQty: 4, salePrice: 5, itemCost: 7 };
           let headerRowIndex = -1;
+          
           for (let i = 0; i < Math.min(jsonData.length, 50); i++) {
             const row = jsonData[i] as any[];
             if (!row) continue;
             const rowStr = row.join('|').toLowerCase();
-            if (rowStr.includes('variance') || rowStr.includes('revenue')) {
+
+            // Strict Header Detection: Must contain identifying column name AND a value column name
+            const hasItemKey = rowStr.includes('item') || rowStr.includes('description') || rowStr.includes('number') || rowStr.includes('code');
+            const hasValueKey = rowStr.includes('variance') || rowStr.includes('revenue') || rowStr.includes('qty') || rowStr.includes('diff');
+            
+            if (hasItemKey && hasValueKey) {
               headerRowIndex = i;
               row.forEach((cell, idx) => {
                 const s = String(cell || '').toLowerCase().trim();
                 if (s.includes('number') || s.includes('code')) colMap.itemNum = idx;
                 else if (s === 'item' || s === 'description') colMap.itemName = idx;
-                else if (s.includes('variance')) colMap.variance = idx;
+                else if (s.includes('variance') || s.includes('diff')) {
+                   if (s.includes('qty') || s.includes('count')) colMap.variance = idx;
+                   else if (!s.includes('cost') && !s.includes('$')) colMap.variance = idx;
+                }
                 else if (s.includes('revenue')) colMap.revenue = idx;
                 else if (s.includes('cost')) colMap.itemCost = idx;
                 else if (['sold', 'qty', 'quantity', 'sales'].some(k => s.includes(k))) colMap.soldQty = idx;
@@ -370,20 +517,35 @@ const App: React.FC = () => {
             }
           }
           if (headerRowIndex === -1) return;
+          
           jsonData.slice(headerRowIndex + 1).forEach((row: any) => {
+            if (!row[colMap.itemNum] && !row[colMap.itemName]) return;
+            if (String(row[colMap.itemName]).toLowerCase().includes('total')) return;
+
             const invVar = parseFloat(row[colMap.variance]) || 0;
-            if (Math.abs(invVar) < 0.001) return;
             const cost = parseFloat(row[colMap.itemCost]) || 0;
             const price = parseFloat(row[colMap.salePrice]) || 0;
             const qty = parseFloat(row[colMap.soldQty]) || 0;
+            
+            let totalRevenue = parseFloat(row[colMap.revenue]) || 0;
+            if (totalRevenue === 0 && price > 0 && qty > 0) {
+              totalRevenue = price * qty;
+            }
+
             const profit = price > 0 ? (price - cost) * qty : 0;
             
+            const shrinkLoss = invVar < 0 ? Math.abs(invVar * cost) : 0;
+            const overageGain = invVar > 0 ? (invVar * cost) : 0;
+            const netVarianceValue = overageGain - shrinkLoss;
+
             allExtractedRecords.push({
               itemNumber: String(row[colMap.itemNum] || ''),
               itemName: String(row[colMap.itemName] || ''),
               invVariance: invVar,
-              totalRevenue: parseFloat(row[colMap.revenue]) || 0,
-              shrinkLoss: invVar < 0 ? Math.abs(invVar * cost) : 0,
+              totalRevenue: totalRevenue,
+              shrinkLoss: shrinkLoss,
+              overageGain: overageGain,
+              netVarianceValue: netVarianceValue,
               unitCost: cost,
               soldQty: qty,
               salePrice: price,
@@ -393,8 +555,32 @@ const App: React.FC = () => {
             });
           });
         });
-        setImportStaging({ records: allExtractedRecords, marketNames: humanMarketNames, period: targetedMonth || 'Current', detectedColumns: [] });
-      } finally { setIsProcessing(false); }
+        
+        if (allExtractedRecords.length === 0) {
+          setNotification({ type: 'error', message: 'No valid forensic data detected in file.' });
+          return;
+        }
+
+        const period = targetedMonth || 'Current';
+        const newRecords = allExtractedRecords.map((r, i) => ({ ...r, id: `imp-${i}-${Date.now()}` } as ShrinkRecord));
+        
+        setRecords(prev => [...prev.filter(r => normalizePeriod(r.period) !== normalizePeriod(period)), ...newRecords]);
+        setSelectedMonths(prev => new Set(prev).add(normalizePeriod(period)));
+        
+        if (view === 'report-upload') {
+            setView('dashboard');
+        }
+
+        setNotification({ 
+            type: 'success', 
+            message: `Successfully synced ${allExtractedRecords.length} records across ${humanMarketNames.length} markets.` 
+        });
+
+      } catch (error) {
+        setNotification({ type: 'error', message: 'Forensic extraction failed. File might be corrupted.' });
+      } finally { 
+        setIsProcessing(false); 
+      }
     };
     reader.readAsArrayBuffer(file);
   };
@@ -416,6 +602,88 @@ const App: React.FC = () => {
               <div className="w-24 h-24 border-4 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin" />
               <p className="text-slate-500 font-bold text-[10px] uppercase tracking-widest">{processingStatus}</p>
            </div>
+        </div>
+      )}
+
+      {/* Notification Toast */}
+      {notification && (
+        <div 
+            onClick={() => setNotification(null)}
+            className={`fixed top-8 left-1/2 -translate-x-1/2 z-[600] cursor-pointer animate-in fade-in slide-in-from-top-4 duration-300 px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 ${notification.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'}`}
+        >
+            <div className="font-bold text-sm">{notification.message}</div>
+            <div className="text-white/60 text-xs uppercase tracking-widest font-black">Dismiss</div>
+        </div>
+      )}
+
+      {/* Explanation Modal */}
+      {explanation && (
+        <div className="fixed inset-0 z-[400] bg-black/50 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200" onClick={() => setExplanation(null)}>
+          <div className="bg-white max-w-lg w-full rounded-[2.5rem] p-10 shadow-2xl border border-slate-100" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-2xl font-black text-slate-900 mb-2">{explanation.title}</h3>
+            <p className="font-mono text-indigo-600 bg-indigo-50 p-3 rounded-xl text-xs mb-6 border border-indigo-100">{explanation.formula}</p>
+            <p className="text-slate-600 font-medium leading-relaxed">{explanation.description}</p>
+            <button onClick={() => setExplanation(null)} className="mt-8 w-full bg-slate-900 text-white py-4 rounded-xl font-bold uppercase tracking-widest text-xs hover:bg-slate-800 transition-all">Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Item Drilldown Modal */}
+      {drilldown && (
+        <div className="fixed inset-0 z-[400] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200" onClick={() => setDrilldown(null)}>
+          <div className="bg-white w-full max-w-2xl rounded-[3rem] p-12 shadow-2xl border border-slate-200 flex flex-col max-h-[85vh]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-start mb-8">
+              <div>
+                <div className={`text-xs font-black uppercase tracking-widest mb-2 ${drilldown.type === 'shrink' ? 'text-red-500' : 'text-emerald-500'}`}>
+                  {drilldown.type === 'shrink' ? 'Shrink Diagnostic' : 'Overage Diagnostic'}
+                </div>
+                <h3 className="text-3xl font-black text-slate-900 tracking-tight leading-none">{drilldown.name}</h3>
+              </div>
+              <button onClick={() => setDrilldown(null)} className="text-slate-400 hover:text-slate-600 text-2xl">✕</button>
+            </div>
+            
+            <div className="bg-slate-50 rounded-2xl p-6 mb-8 border border-slate-100">
+               <div className="flex justify-between items-center mb-2">
+                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Calculated Total</span>
+                 <span className={`text-2xl font-black ${drilldown.type === 'shrink' ? 'text-red-500' : 'text-emerald-500'}`}>
+                   {drilldown.type === 'shrink' ? '-' : '+'}${drilldown.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                 </span>
+               </div>
+               <div className="text-[10px] text-slate-400 font-mono">
+                 Formula: <span className="text-slate-600">Sum({drilldown.type === 'shrink' ? 'Abs(Negative Variance)' : 'Positive Variance'} × Unit Cost)</span>
+               </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto custom-scrollbar -mx-4 px-4">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    <th className="py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Market Source</th>
+                    <th className="py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Var Qty</th>
+                    <th className="py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Value Impact</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {drilldown.breakdown.map((row, idx) => (
+                    <tr key={idx} className="border-b border-slate-50 last:border-0 hover:bg-slate-50 transition-colors">
+                      <td className="py-4 text-xs font-bold text-slate-700">{row.market}</td>
+                      <td className={`py-4 text-xs font-mono font-bold text-right ${row.qty < 0 ? 'text-red-500' : 'text-emerald-500'}`}>{row.qty}</td>
+                      <td className="py-4 text-xs font-mono font-bold text-right text-slate-900">${row.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    </tr>
+                  ))}
+                  {drilldown.breakdown.length === 0 && (
+                    <tr>
+                      <td colSpan={3} className="py-8 text-center text-slate-400 text-xs italic">No variance records found for this view filter.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-8 pt-6 border-t border-slate-100 flex justify-end">
+               <button onClick={() => setDrilldown(null)} className="bg-slate-900 text-white px-8 py-4 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-slate-800 transition-all shadow-xl">Close Diagnostic</button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -490,42 +758,36 @@ const App: React.FC = () => {
       </aside>
 
       <main className="flex-1 overflow-y-auto bg-[#F8FAFC] custom-scrollbar">
-        {/* Import Audit Modal */}
-        {importStaging && (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/90 backdrop-blur-xl">
-            <div className="bg-white w-full max-w-xl rounded-[4rem] shadow-2xl p-12 border border-slate-200">
-               <h3 className="text-3xl font-black mb-6 tracking-tighter uppercase">Audit Required</h3>
-               <p className="text-slate-500 mb-10 text-sm font-medium leading-relaxed uppercase tracking-tight">Found <span className="font-black text-indigo-600">{importStaging.records.length} forensic variances</span> across {importStaging.marketNames.length} markets.</p>
-               <div className="flex gap-4">
-                  <button onClick={() => setImportStaging(null)} className="flex-1 py-5 font-black text-slate-400 uppercase tracking-widest text-[10px]">Discard</button>
-                  <button onClick={() => {
-                    const newRecords = importStaging.records.map((r, i) => ({ ...r, id: `imp-${i}-${Date.now()}` } as ShrinkRecord));
-                    setRecords(prev => [...prev.filter(r => normalizePeriod(r.period) !== importStaging.period), ...newRecords]);
-                    setSelectedMonths(prev => new Set(prev).add(normalizePeriod(importStaging.period)));
-                    setImportStaging(null);
-                    setView('dashboard');
-                  }} className="flex-[2] bg-indigo-600 text-white py-5 rounded-3xl font-black shadow-2xl shadow-indigo-200 hover:bg-indigo-700 transition-all uppercase tracking-widest text-xs">Commit To History</button>
-               </div>
-            </div>
-          </div>
-        )}
-
+        {/* Remove Audit Modal - Replaced by Notification */}
+        
         <div className="p-12 max-w-7xl mx-auto">
           {/* Month Grid Selector */}
           <div className="mb-14 flex gap-5 overflow-x-auto pb-8 custom-scrollbar scroll-smooth">
-            {MONTHS.map(m => {
+            {MONTH_ORDER.map(m => {
               const isPopulated = populatedMonths.has(m);
               const isSelected = selectedMonths.has(m);
               const mStats = timelineStats[m];
+              const sPct = mStats && mStats.revenue ? (mStats.shrink / mStats.revenue) * 100 : 0;
+              const oPct = mStats && mStats.revenue ? (mStats.overage / mStats.revenue) * 100 : 0;
+              const nPct = mStats && mStats.revenue ? ((mStats.overage - mStats.shrink) / mStats.revenue) * 100 : 0;
+              
               return (
                 <div key={m} onClick={() => isPopulated ? setSelectedMonths(prev => { const n = new Set(prev); if (n.has(m)) n.delete(m); else n.add(m); return n; }) : (setActiveUploadMonth(m), fileInputRef.current?.click())} 
                      className={`flex-shrink-0 w-44 h-60 rounded-[3rem] border-2 flex flex-col items-center justify-between p-6 cursor-pointer transition-all duration-300 group ${isSelected ? 'bg-white border-indigo-500 shadow-2xl scale-105 z-10' : isPopulated ? 'bg-white border-slate-100 hover:border-indigo-200 shadow-xl' : 'bg-slate-100 border-dashed border-slate-300 opacity-60 hover:opacity-100'}`}>
                   <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{m}</span>
                   {isPopulated ? (
-                    <div className="w-full space-y-2 pt-2 border-t border-slate-50">
+                    <div className="w-full space-y-2 pt-2 border-t border-slate-50 flex flex-col gap-1">
                         <div className="flex justify-between items-center text-[9px] font-black">
-                          <span className="text-slate-400 uppercase">Loss</span>
-                          <span className="text-red-500">-${Math.round(mStats?.shrink || 0).toLocaleString()}</span>
+                          <span className="text-slate-400 uppercase">Shrink</span>
+                          <span className="text-red-500">{sPct.toFixed(2)}%</span>
+                        </div>
+                        <div className="flex justify-between items-center text-[9px] font-black">
+                          <span className="text-slate-400 uppercase">Overage</span>
+                          <span className="text-emerald-500">{oPct.toFixed(2)}%</span>
+                        </div>
+                         <div className="flex justify-between items-center text-[9px] font-black">
+                          <span className="text-slate-400 uppercase">Net</span>
+                          <span className="text-indigo-500">{nPct.toFixed(2)}%</span>
                         </div>
                     </div>
                   ) : (
@@ -542,11 +804,9 @@ const App: React.FC = () => {
              <div className="text-center py-20 opacity-50 font-black text-slate-300 uppercase tracking-widest">Select a month above to load forensic data</div>
           )}
 
-          {/* DASHBOARD VIEW */}
-          {view === 'dashboard' && records.length > 0 && (
-            <div className="animate-in fade-in slide-in-from-bottom-5 duration-700">
-              
-              <div className="flex flex-wrap items-center justify-between gap-6 mb-8">
+          {/* SHARED FILTERS (Dashboard & AI) */}
+          {records.length > 0 && (view === 'dashboard' || view === 'ai-insights') && (
+              <div className="flex flex-wrap items-center justify-between gap-6 mb-8 animate-in fade-in slide-in-from-bottom-5 duration-700 px-1">
                  <div className="bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm flex items-center">
                     {(['ALL', 'SODA_SNACK', 'COLD'] as SegmentFilter[]).map(seg => (
                        <button 
@@ -570,18 +830,63 @@ const App: React.FC = () => {
                     <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400"><Icons.Markets /></div>
                  </div>
               </div>
+          )}
 
+          {/* DASHBOARD VIEW */}
+          {view === 'dashboard' && records.length > 0 && (
+            <div className="animate-in fade-in slide-in-from-bottom-5 duration-700">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mb-16">
-                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100">
-                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Shrink</p>
-                    <p className="text-5xl font-black text-red-500 tracking-tighter">-${stats.totalShrink.toLocaleString()}</p>
+                 <div 
+                    onClick={() => setExplanation({title: 'Gross Shrink', formula: 'SUM(|Negative Variance * Cost|)', description: 'Total financial value of items missing from inventory. This metric represents pure loss before any overages are netted out.'})}
+                    className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 relative overflow-hidden group cursor-help hover:border-red-200 transition-colors"
+                 >
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-red-50 rounded-full -mr-10 -mt-10 z-0 group-hover:scale-150 transition-all duration-700" />
+                    <div className="relative z-10">
+                        <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Shrink</p>
+                        <p className="text-4xl lg:text-5xl font-black text-red-500 tracking-tighter">-${stats.totalShrink.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+                        <p className="text-xs font-bold text-red-400 mt-2 bg-red-50 inline-block px-2 py-1 rounded-lg border border-red-100">{stats.shrinkPct.toFixed(2)}% of Rev</p>
+                    </div>
                  </div>
-                 <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100">
-                    <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Integrity</p>
-                    <p className="text-5xl font-black text-slate-900 tracking-tighter">{stats.accuracy}%</p>
+                 
+                 <div 
+                    onClick={() => setExplanation({title: 'Gross Overage', formula: 'SUM(Positive Variance * Cost)', description: 'Total financial value of unexpected surplus inventory. High overage typically indicates receiving errors (drivers forgetting to add items to the invoice) or previous counting errors.'})}
+                    className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 relative overflow-hidden group cursor-help hover:border-emerald-200 transition-colors"
+                 >
+                     <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-50 rounded-full -mr-10 -mt-10 z-0 group-hover:scale-150 transition-all duration-700" />
+                     <div className="relative z-10">
+                        <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Gross Overage</p>
+                        <p className="text-4xl lg:text-5xl font-black text-emerald-500 tracking-tighter">+${stats.totalOverage.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+                        <p className="text-xs font-bold text-emerald-500 mt-2 bg-emerald-50 inline-block px-2 py-1 rounded-lg border border-emerald-100">{stats.overagePct.toFixed(2)}% of Rev</p>
+                     </div>
+                 </div>
+
+                 <div 
+                    onClick={() => setExplanation({title: 'Net Variance', formula: 'Gross Overage - Gross Shrink', description: 'The financial balance of all inventory errors. A positive number means you have more inventory value than expected (surplus), while a negative number indicates an overall financial loss.'})}
+                    className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 relative overflow-hidden group cursor-help hover:border-indigo-200 transition-colors"
+                 >
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-50 rounded-full -mr-10 -mt-10 z-0 group-hover:scale-150 transition-all duration-700" />
+                    <div className="relative z-10">
+                        <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Net Variance</p>
+                        <p className={`text-4xl lg:text-5xl font-black tracking-tighter ${stats.netVariance >= 0 ? 'text-indigo-600' : 'text-red-600'}`}>
+                           {stats.netVariance >= 0 ? '+' : '-'}${Math.abs(stats.netVariance).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        </p>
+                        <p className="text-xs font-bold text-indigo-400 mt-2 bg-indigo-50 inline-block px-2 py-1 rounded-lg border border-indigo-100">{stats.netPct.toFixed(2)}% of Rev</p>
+                    </div>
+                 </div>
+
+                 <div 
+                    onClick={() => setExplanation({title: 'Inventory Integrity', formula: '100% - (Abs(Shrink) + Abs(Overage)) / Revenue', description: 'A measure of operational precision. It penalizes BOTH shrink and overage equally, as both represent errors in the supply chain or counting process.'})}
+                    className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 relative overflow-hidden group cursor-help hover:border-slate-300 transition-colors"
+                 >
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-slate-100 rounded-full -mr-10 -mt-10 z-0 group-hover:scale-150 transition-all duration-700" />
+                    <div className="relative z-10">
+                        <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Integrity</p>
+                        <p className="text-4xl lg:text-5xl font-black text-slate-900 tracking-tighter">{stats.accuracy}%</p>
+                        <p className="text-xs font-bold text-slate-400 mt-2 bg-slate-100 inline-block px-2 py-1 rounded-lg border border-slate-200">Accuracy Score</p>
+                    </div>
                  </div>
               </div>
-              <AnalysisCharts data={filteredRecords} />
+              <AnalysisCharts data={filteredRecords} allRecords={records} onItemAnalysis={handleItemDrilldown} />
             </div>
           )}
 
@@ -589,10 +894,12 @@ const App: React.FC = () => {
           {view === 'report-upload' && (
              <div className="flex flex-col items-center justify-center py-20 animate-in zoom-in-95 duration-500">
                 <div className="bg-white p-20 rounded-[5rem] shadow-2xl border border-slate-200 text-center max-w-2xl">
-                   <div className="w-24 h-24 bg-indigo-50 rounded-[2.5rem] flex items-center justify-center text-indigo-600 mx-auto mb-8 text-3xl"><Icons.Upload /></div>
-                   <h2 className="text-4xl font-black mb-4 tracking-tighter text-slate-900">Forensic Data Ingestion</h2>
-                   <p className="text-slate-500 mb-12 font-medium text-lg">Select a month in the grid above or drop a consolidated report here to begin analysis.</p>
-                   <button onClick={() => fileInputRef.current?.click()} className="bg-indigo-600 text-white px-10 py-5 rounded-3xl font-black uppercase tracking-widest text-xs shadow-2xl hover:bg-indigo-700 transition-all hover:scale-105 active:scale-95">Select Source File</button>
+                   <div className="w-24 h-24 bg-indigo-50 rounded-[2.5rem] flex items-center justify-center text-indigo-600 mx-auto mb-8 text-3xl"><Icons.Dashboard /></div>
+                   <h2 className="text-4xl font-black mb-4 tracking-tighter text-slate-900">Initialization</h2>
+                   <div className="text-slate-500 mb-8 font-medium text-lg space-y-2">
+                      <p>Use the <span className="text-indigo-600 font-bold uppercase text-xs tracking-widest bg-indigo-50 px-2 py-1 rounded-lg">Month Grid</span> above to upload reports.</p>
+                      <p className="text-sm opacity-70">Click any empty month slot to import Excel data for that specific period.</p>
+                   </div>
                 </div>
              </div>
           )}
@@ -609,17 +916,66 @@ const App: React.FC = () => {
                 </div>
                 <div className="flex-1 flex overflow-hidden">
                   <div className="w-96 bg-slate-50 border-r border-slate-200 p-12 space-y-10 flex flex-col overflow-y-auto">
-                    <button onClick={startDeepDive} className={`w-full p-10 rounded-[3rem] border-2 transition-all ${deepDiveStatus === 'analyzing' ? 'bg-indigo-50 border-indigo-200 cursor-wait' : 'bg-white border-slate-200 hover:border-indigo-400'}`}>
-                      <div className="text-5xl mb-4">🩺</div>
-                      <span className="font-black uppercase tracking-tighter text-base">Full Forensic Audit</span>
+                    
+                    {/* Deep Dive Button */}
+                    <button 
+                        onClick={startDeepDive} 
+                        disabled={deepDiveStatus === 'analyzing'}
+                        className={`relative w-full p-10 rounded-[3rem] border-2 transition-all duration-500 overflow-hidden group text-left ${
+                            deepDiveStatus === 'analyzing' ? 'bg-indigo-50 border-indigo-200 cursor-wait' : 
+                            deepDiveStatus === 'ready' ? 'bg-emerald-50 border-emerald-500 shadow-2xl shadow-emerald-100 scale-105' : 
+                            'bg-white border-slate-200 hover:border-indigo-400 hover:shadow-xl'
+                        }`}
+                    >
+                        {/* Thinking Cloud Animation */}
+                        <div className={`absolute top-6 right-8 text-4xl transition-all duration-500 ${deepDiveStatus === 'analyzing' ? 'opacity-100 translate-y-0 animate-bounce' : 'opacity-0 translate-y-4'}`}>
+                            💭
+                        </div>
+
+                        <div className={`text-5xl mb-4 transition-transform duration-700 ${deepDiveStatus === 'analyzing' ? 'animate-pulse scale-110' : 'group-hover:scale-110'}`}>
+                            🧠
+                        </div>
+                        
+                        <div className="flex flex-col items-start">
+                            <span className={`font-black uppercase tracking-tighter text-base ${deepDiveStatus === 'ready' ? 'text-emerald-700' : 'text-slate-900'}`}>
+                                {deepDiveStatus === 'ready' ? 'Results Ready' : 'Deep Dive'}
+                            </span>
+                             {deepDiveStatus === 'ready' && (
+                                <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest mt-1 animate-pulse">Click to View</span>
+                            )}
+                        </div>
                     </button>
+
                     <div className="flex flex-col gap-4">
-                        {SUGGESTED_QUESTIONS.map((q, idx) => (
-                          <button key={idx} onClick={() => handleRunQuickAI(q)} className="text-left p-5 rounded-3xl border text-[11px] font-bold uppercase tracking-widest bg-white hover:border-indigo-400 transition-all">
-                            {q}
+                        {rotatedPrompts.map((q, idx) => (
+                          <button 
+                            key={idx} 
+                            onClick={() => handleRunQuickAI(q)} 
+                            disabled={isQuickAnalyzing}
+                            className={`text-left p-5 rounded-3xl border text-[11px] font-bold uppercase tracking-widest transition-all relative overflow-hidden ${
+                                activeChip === q 
+                                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg scale-[1.02]' 
+                                    : 'bg-white hover:border-indigo-400 text-slate-700 hover:shadow-md'
+                            }`}
+                          >
+                            <div className="relative z-10 flex items-start gap-3">
+                                {activeChip === q && isQuickAnalyzing ? (
+                                    <div className="w-4 h-4 mt-0.5 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />
+                                ) : (
+                                    <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${activeChip === q ? 'bg-white' : 'bg-indigo-200'}`} />
+                                )}
+                                <span>{q}</span>
+                            </div>
                           </button>
                         ))}
                     </div>
+                    <button 
+                      onClick={shufflePrompts} 
+                      className="w-full py-4 bg-indigo-50 text-indigo-600 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-100 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                      Shuffle / New Ideas
+                    </button>
                   </div>
                   <div className="flex-1 flex flex-col bg-white">
                     <div ref={scrollRef} className="flex-1 p-16 overflow-y-auto bg-white custom-scrollbar">
@@ -632,8 +988,12 @@ const App: React.FC = () => {
                     <div className="p-16 bg-slate-50/50 border-t border-slate-200">
                       <div className="relative group max-w-4xl mx-auto">
                         <input type="text" value={aiUserPrompt} onChange={(e) => setAiUserPrompt(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleRunQuickAI()} placeholder="Ask about variances..." className="w-full bg-white border-4 border-slate-200 rounded-[3rem] px-14 py-8 text-base font-bold outline-none pr-32 shadow-2xl" />
-                        <button onClick={() => handleRunQuickAI()} disabled={!aiUserPrompt.trim()} className="absolute right-6 top-6 w-16 h-16 bg-indigo-600 text-white rounded-[1.5rem] flex items-center justify-center shadow-xl shadow-indigo-200">
-                          <Icons.AI />
+                        <button onClick={() => handleRunQuickAI()} disabled={!aiUserPrompt.trim() && !isQuickAnalyzing} className="absolute right-6 top-6 w-16 h-16 bg-indigo-600 text-white rounded-[1.5rem] flex items-center justify-center shadow-xl shadow-indigo-200 transition-all">
+                          {isQuickAnalyzing && activeChip === 'custom' ? (
+                            <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                          ) : (
+                            <Icons.AI />
+                          )}
                         </button>
                       </div>
                     </div>

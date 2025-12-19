@@ -8,6 +8,8 @@ export interface ShrinkRecord {
   soldQty: number;
   salePrice: number;
   shrinkLoss: number;
+  overageGain: number;      // Value of positive variance
+  netVarianceValue: number; // Signed value (Overage - Shrink)
   unitCost: number;
   itemProfit: number;
   category: string;
