@@ -1,10 +1,24 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { ShrinkRecord } from "../types";
 
+// Ensure TypeScript recognizes the global process object attached to window
+declare global {
+  interface Window {
+    process: {
+      env: {
+        API_KEY?: string;
+      }
+    }
+  }
+}
+
 const getAI = () => {
-  const apiKey = process.env.API_KEY;
+  // Robustly retrieve the key from the global window object where App.tsx injects it.
+  // We check window.process explicitly to avoid bundler/transpiler scope isolation issues.
+  const apiKey = window.process?.env?.API_KEY;
+
   if (!apiKey) {
+    console.error("AUTH ERROR: API_KEY missing from window.process.env");
     throw new Error("AUTH_REQUIRED");
   }
   return new GoogleGenAI({ apiKey });

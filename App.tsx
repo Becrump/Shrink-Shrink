@@ -136,6 +136,12 @@ const App: React.FC = () => {
         if (res.ok) {
           const workerData = await res.json();
           const browserKey = (window.process?.env?.API_KEY as string) || "undefined";
+          
+          // Self-heal: If we have a key in memory, ensure UI state reflects "Engine Active"
+          if (browserKey && browserKey !== "undefined" && browserKey.length > 10) {
+            setIsKeyActive(true);
+          }
+
           setSystemInfo({ browserKey, workerData });
           setShowSystemDetails(true);
           return;
